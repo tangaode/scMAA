@@ -119,21 +119,28 @@ class ScRTDesktopApp(tk.Tk):
     def _build_prepare_panel(self, parent) -> None:
         frame = ttk.LabelFrame(parent, text="1. Raw Data Preparation", padding=10)
         frame.pack(fill="x", pady=(0, 10))
-        self._path_row(frame, "Raw input", self.raw_input_var, self._browse_raw_input)
-        self._path_row(frame, "Output dir", self.prep_output_var, self._browse_prep_output_dir)
-        self._path_row(frame, "Annotation notes", self.annotation_notes_var, self._browse_annotation_notes, required=False)
+        ttk.Label(frame, text="Raw input folder").grid(row=0, column=0, sticky="w", pady=4)
+        ttk.Entry(frame, textvariable=self.raw_input_var, width=42).grid(row=0, column=1, sticky="ew", pady=4)
+        ttk.Button(frame, text="Folder", command=self._browse_raw_input_folder).grid(row=0, column=2, sticky="ew", padx=(6, 0), pady=4)
+        ttk.Button(frame, text="RAW.tar", command=self._browse_raw_input_tar).grid(row=0, column=3, sticky="ew", padx=(6, 0), pady=4)
+        ttk.Label(frame, text="Use the folder that contains the extracted GEO files.").grid(
+            row=1, column=1, columnspan=3, sticky="w"
+        )
 
-        ttk.Label(frame, text="Annotation model").grid(row=3, column=0, sticky="w", pady=4)
-        ttk.Entry(frame, textvariable=self.annotation_model_var, width=28).grid(row=3, column=1, sticky="ew", pady=4)
-        ttk.Label(frame, text="Min genes").grid(row=4, column=0, sticky="w", pady=4)
-        ttk.Entry(frame, textvariable=self.min_genes_var, width=10).grid(row=4, column=1, sticky="w", pady=4)
-        ttk.Label(frame, text="Min cells").grid(row=5, column=0, sticky="w", pady=4)
-        ttk.Entry(frame, textvariable=self.min_cells_var, width=10).grid(row=5, column=1, sticky="w", pady=4)
-        ttk.Label(frame, text="Max pct mt").grid(row=6, column=0, sticky="w", pady=4)
-        ttk.Entry(frame, textvariable=self.max_pct_mt_var, width=10).grid(row=6, column=1, sticky="w", pady=4)
-        ttk.Label(frame, text="Leiden resolution").grid(row=7, column=0, sticky="w", pady=4)
-        ttk.Entry(frame, textvariable=self.leiden_resolution_var, width=10).grid(row=7, column=1, sticky="w", pady=4)
-        ttk.Button(frame, text="Prepare Raw Data", command=self.prepare_raw_data).grid(row=8, column=0, columnspan=3, sticky="ew", pady=(8, 0))
+        self._path_row(frame, "Output dir", self.prep_output_var, self._browse_prep_output_dir, row=2)
+        self._path_row(frame, "Annotation notes", self.annotation_notes_var, self._browse_annotation_notes, row=3, required=False)
+
+        ttk.Label(frame, text="Annotation model").grid(row=4, column=0, sticky="w", pady=4)
+        ttk.Entry(frame, textvariable=self.annotation_model_var, width=28).grid(row=4, column=1, sticky="ew", pady=4)
+        ttk.Label(frame, text="Min genes").grid(row=5, column=0, sticky="w", pady=4)
+        ttk.Entry(frame, textvariable=self.min_genes_var, width=10).grid(row=5, column=1, sticky="w", pady=4)
+        ttk.Label(frame, text="Min cells").grid(row=6, column=0, sticky="w", pady=4)
+        ttk.Entry(frame, textvariable=self.min_cells_var, width=10).grid(row=6, column=1, sticky="w", pady=4)
+        ttk.Label(frame, text="Max pct mt").grid(row=7, column=0, sticky="w", pady=4)
+        ttk.Entry(frame, textvariable=self.max_pct_mt_var, width=10).grid(row=7, column=1, sticky="w", pady=4)
+        ttk.Label(frame, text="Leiden resolution").grid(row=8, column=0, sticky="w", pady=4)
+        ttk.Entry(frame, textvariable=self.leiden_resolution_var, width=10).grid(row=8, column=1, sticky="w", pady=4)
+        ttk.Button(frame, text="Prepare Raw Data", command=self.prepare_raw_data).grid(row=9, column=0, columnspan=4, sticky="ew", pady=(8, 0))
         frame.columnconfigure(1, weight=1)
 
     def _build_agent_panel(self, parent) -> None:
@@ -189,8 +196,9 @@ class ScRTDesktopApp(tk.Tk):
         self.log_text = tk.Text(frame, wrap="word", height=16)
         self.log_text.grid(row=0, column=0, sticky="nsew")
 
-    def _path_row(self, parent, label: str, variable: tk.StringVar, browse_command, *, required: bool = True) -> None:
-        row = parent.grid_size()[1]
+    def _path_row(self, parent, label: str, variable: tk.StringVar, browse_command, *, row: int | None = None, required: bool = True) -> None:
+        if row is None:
+            row = parent.grid_size()[1]
         ttk.Label(parent, text=label).grid(row=row, column=0, sticky="w", pady=4)
         ttk.Entry(parent, textvariable=variable, width=42).grid(row=row, column=1, sticky="ew", pady=4)
         ttk.Button(parent, text="Browse", command=browse_command).grid(row=row, column=2, sticky="ew", padx=(6, 0), pady=4)
@@ -417,17 +425,18 @@ class ScRTDesktopApp(tk.Tk):
         except Exception as exc:  # pragma: no cover
             messagebox.showerror("Open folder failed", str(exc))
 
-    def _browse_raw_input(self) -> None:
+    def _browse_raw_input_folder(self) -> None:
+        directory = filedialog.askdirectory(title="Select extracted raw data directory")
+        if directory:
+            self.raw_input_var.set(directory)
+
+    def _browse_raw_input_tar(self) -> None:
         path = filedialog.askopenfilename(
-            title="Select RAW.tar or choose Cancel and use a directory",
+            title="Select GEO RAW.tar archive",
             filetypes=[("TAR archives", "*.tar"), ("All files", "*.*")],
         )
         if path:
             self.raw_input_var.set(path)
-            return
-        directory = filedialog.askdirectory(title="Select extracted raw data directory")
-        if directory:
-            self.raw_input_var.set(directory)
 
     def _browse_prep_output_dir(self) -> None:
         directory = filedialog.askdirectory(title="Select preparation output directory")
