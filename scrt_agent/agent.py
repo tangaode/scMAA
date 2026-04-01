@@ -19,7 +19,16 @@ from .literature import (
 )
 from .logger import AgentLogger
 from .research import ResearchLedger
-from .utils import load_tcr_table, normalize_tcr_columns, read_text, truncate_text
+from .utils import (
+    barcode_core,
+    infer_sample_column,
+    load_tcr_table,
+    make_merge_key,
+    normalize_barcode,
+    normalize_tcr_columns,
+    read_text,
+    truncate_text,
+)
 from .validator import DatasetValidator
 
 
@@ -51,17 +60,6 @@ RNA_METADATA_HINTS = (
     "cluster",
     "leiden",
 )
-
-
-def _normalize_barcode(value: object) -> str:
-    if value is None:
-        return ""
-    text = str(value).strip()
-    if not text or text.lower() == "nan":
-        return ""
-    return text.split("-")[0]
-
-
 def _top_counts(series, limit: int = 8) -> str:
     counts = series.value_counts(dropna=True).head(limit)
     if counts.empty:
@@ -453,18 +451,25 @@ class ScRTAgent:
 
         adata = ad.read_h5ad(rna_h5ad_path, backed="r")
         try:
-            obs_names = [str(idx) for idx in adata.obs_names]
-            obs_core = {_normalize_barcode(idx) for idx in obs_names}
             lower_to_original = {str(col).lower(): str(col) for col in adata.obs.columns}
-            sample_column = None
-            for hint in ("sample", "sample_id", "orig.ident", "donor", "patient"):
-                if hint in lower_to_original:
-                    sample_column = lower_to_original[hint]
-                    break
+            barcode_column = lower_to_original.get("barcode")
+            sample_column = infer_sample_column(adata.obs.columns)
+            rna_barcodes = (
+                adata.obs[barcode_column].astype(str).tolist()
+                if barcode_column is not None
+                else [str(idx) for idx in adata.obs_names]
+            )
+            rna_samples = (
+                adata.obs[sample_column].tolist()
+                if sample_column is not None
+                else [None] * len(rna_barcodes)
+            )
 
             df = normalize_tcr_columns(load_tcr_table(tcr_path))
             exact_overlap = 0
             core_overlap = 0
+            sample_exact_overlap = 0
+            sample_core_overlap = 0
             tcr_unique_barcodes = 0
             tcr_unique_core = 0
             tcr_clonotypes = 0
@@ -472,11 +477,33 @@ class ScRTAgent:
 
             if "barcode" in df.columns:
                 tcr_barcodes = set(df["barcode"].dropna().astype(str))
-                tcr_core = {_normalize_barcode(value) for value in tcr_barcodes}
-                exact_overlap = sum(1 for barcode in obs_names if barcode in tcr_barcodes)
-                core_overlap = sum(1 for barcode in obs_core if barcode and barcode in tcr_core)
+                tcr_core = {barcode_core(value) for value in tcr_barcodes}
+                exact_overlap = sum(1 for barcode in rna_barcodes if normalize_barcode(barcode) in tcr_barcodes)
+                core_overlap = sum(1 for barcode in rna_barcodes if barcode_core(barcode) in tcr_core)
                 tcr_unique_barcodes = len(tcr_barcodes)
                 tcr_unique_core = len(tcr_core)
+                tcr_sample_column = infer_sample_column(df.columns)
+                if sample_column and tcr_sample_column:
+                    tcr_exact_keys = {
+                        make_merge_key(barcode, sample, use_core=False)
+                        for barcode, sample in zip(df["barcode"], df[tcr_sample_column])
+                        if make_merge_key(barcode, sample, use_core=False)
+                    }
+                    tcr_core_keys = {
+                        make_merge_key(barcode, sample, use_core=True)
+                        for barcode, sample in zip(df["barcode"], df[tcr_sample_column])
+                        if make_merge_key(barcode, sample, use_core=True)
+                    }
+                    sample_exact_overlap = sum(
+                        1
+                        for barcode, sample in zip(rna_barcodes, rna_samples)
+                        if make_merge_key(barcode, sample, use_core=False) in tcr_exact_keys
+                    )
+                    sample_core_overlap = sum(
+                        1
+                        for barcode, sample in zip(rna_barcodes, rna_samples)
+                        if make_merge_key(barcode, sample, use_core=True) in tcr_core_keys
+                    )
             if "clonotype_id" in df.columns:
                 tcr_clonotypes = df["clonotype_id"].dropna().astype(str).nunique()
             if sample_column:
@@ -501,17 +528,26 @@ class ScRTAgent:
                     f"top levels: {_top_counts(df['tissue'])}"
                 )
 
-            chosen_mode = "exact" if exact_overlap >= core_overlap else "barcode_core"
+            overlap_modes = {
+                "sample_exact": sample_exact_overlap,
+                "sample_barcode_core": sample_core_overlap,
+                "exact": exact_overlap,
+                "barcode_core": core_overlap,
+            }
+            chosen_mode = max(overlap_modes, key=overlap_modes.get)
+            best_overlap = overlap_modes[chosen_mode]
             lines = [
                 f"Exact barcode overlap between RNA obs_names and TCR barcodes: {exact_overlap}",
                 f"Core barcode overlap after stripping suffixes: {core_overlap}",
+                f"Sample-aware exact overlap: {sample_exact_overlap}",
+                f"Sample-aware core overlap: {sample_core_overlap}",
                 f"Preferred merge mode: {chosen_mode}",
                 f"RNA cells: {adata.n_obs}",
                 f"TCR unique barcodes: {tcr_unique_barcodes}",
                 f"TCR unique barcode cores: {tcr_unique_core}",
                 f"TCR unique clonotypes: {tcr_clonotypes}",
                 f"Approximate RNA coverage by TCR ({chosen_mode}): "
-                f"{(max(exact_overlap, core_overlap) / max(adata.n_obs, 1)):.3f}",
+                f"{(best_overlap / max(adata.n_obs, 1)):.3f}",
             ]
             lines.extend(sample_lines)
             lines.append(

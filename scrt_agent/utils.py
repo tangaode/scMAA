@@ -5,11 +5,23 @@ from __future__ import annotations
 import ast
 import importlib
 import inspect
+import math
 import textwrap
 from pathlib import Path
 from typing import Iterable
 
 import pandas as pd
+
+
+SAMPLE_COLUMN_CANDIDATES = (
+    "sample_key",
+    "sample_id",
+    "sample",
+    "orig.ident",
+    "donor",
+    "patient",
+    "library_id",
+)
 
 
 def read_text(path: str | Path, default: str = "") -> str:
@@ -44,6 +56,7 @@ def normalize_tcr_columns(df: pd.DataFrame) -> pd.DataFrame:
     aliases = {
         "barcode": ["barcode", "cell_id", "cell_barcode", "raw_clonotype_id"],
         "sample_id": ["sample", "sample_id", "orig.ident", "donor", "patient", "library_id"],
+        "sample_key": ["sample_key", "sample_name", "sample_label"],
         "clonotype_id": ["clonotype_id", "raw_clonotype_id", "clone_id", "clonotype"],
         "chain": ["chain", "locus"],
         "cdr3": ["cdr3", "cdr3_aa", "cdr3s_aa", "cdr3_nt"],
@@ -62,6 +75,53 @@ def normalize_tcr_columns(df: pd.DataFrame) -> pd.DataFrame:
                 renamed[target] = renamed[lower_to_original[candidate.lower()]]
                 break
     return renamed
+
+
+def normalize_barcode(value: object) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, float) and math.isnan(value):
+        return ""
+    text = str(value).strip()
+    if not text or text.lower() == "nan":
+        return ""
+    if ":" in text:
+        text = text.rsplit(":", 1)[-1]
+    return text
+
+
+def barcode_core(value: object) -> str:
+    text = normalize_barcode(value)
+    if not text:
+        return ""
+    return text.split("-")[0]
+
+
+def normalize_sample_value(value: object) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, float) and math.isnan(value):
+        return ""
+    text = str(value).strip()
+    if not text or text.lower() == "nan":
+        return ""
+    return text
+
+
+def infer_sample_column(columns: Iterable[object]) -> str | None:
+    normalized = {str(col).lower(): str(col) for col in columns}
+    for candidate in SAMPLE_COLUMN_CANDIDATES:
+        if candidate.lower() in normalized:
+            return normalized[candidate.lower()]
+    return None
+
+
+def make_merge_key(barcode_value: object, sample_value: object = None, *, use_core: bool = False) -> str:
+    barcode = barcode_core(barcode_value) if use_core else normalize_barcode(barcode_value)
+    sample = normalize_sample_value(sample_value)
+    if not barcode:
+        return ""
+    return f"{sample}::{barcode}" if sample else barcode
 
 
 def extract_call_names(source: str) -> list[str]:

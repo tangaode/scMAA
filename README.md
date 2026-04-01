@@ -2,11 +2,13 @@
 
 `scRT-agent v2` is a tool for `scRNA + scTCR` analysis.
 
-It takes a processed RNA file, a TCR table, and a short research brief. It then proposes a question, writes notebook code, runs the code, and saves the results.
+It can start from raw GEO-style files or from a prepared RNA object and TCR table.
+
+If you start from raw data, it first builds a processed `.h5ad`, merges the TCR tables, runs basic QC, UMAP, clustering, cluster markers, and cluster labels. Then the main agent can use those prepared files.
 
 ## Inputs
 
-Required:
+For the main agent:
 
 - one processed RNA file in `.h5ad` format
 - one scTCR table such as `.tsv`, `.csv`, or `.txt`
@@ -17,6 +19,41 @@ Optional:
 - local papers, reviews, or notes
 
 The main text input is the `research brief`. It does not need a fixed template. A few short paragraphs or bullet points are enough. It helps to mention the question, the samples or tissues, the main comparison, and any markers or pathways you care about.
+
+## Raw Data Preparation
+
+If your data is still in raw files such as:
+
+- `*_barcodes.tsv.gz`
+- `*_features.tsv.gz`
+- `*_matrix.mtx.gz`
+- `*_filtered_contig_annotations.csv.gz`
+- or one `GSE*_RAW.tar`
+
+run this first:
+
+```bash
+python run_scrt_prepare_data.py \
+  --raw-input-path PATH_TO_RAW_DIR_OR_RAW_TAR \
+  --output-dir PREPARED_OUTPUT_DIR
+```
+
+This step writes:
+
+- `processed_rna.h5ad`
+- `merged_tcr_annotations.tsv.gz`
+- `cluster_markers.csv`
+- `cluster_annotations.csv`
+- `qc_summary.txt`
+- `figures/umap_leiden.png`
+- `figures/umap_cluster_cell_type.png`
+
+The preparation step also:
+
+- filters low-quality cells
+- computes PCA, neighbors, UMAP, and Leiden clusters
+- exports cluster marker genes
+- sends the top 50 non-lincRNA markers of each cluster to the model for cluster labeling
 
 ## Install
 
@@ -35,8 +72,8 @@ OPENAI_API_KEY=...
 
 ```bash
 python run_scrt_agent.py \
-  --rna-h5ad-path PATH_TO_RNA_H5AD \
-  --tcr-path PATH_TO_TCR_TABLE \
+  --rna-h5ad-path PREPARED_OUTPUT_DIR/processed_rna.h5ad \
+  --tcr-path PREPARED_OUTPUT_DIR/merged_tcr_annotations.tsv.gz \
   --research-brief-path PATH_TO_BRIEF_TXT \
   --analysis-name MY_RUN \
   --with-figure
@@ -46,8 +83,8 @@ If you want to add local papers or notes:
 
 ```bash
 python run_scrt_agent.py \
-  --rna-h5ad-path PATH_TO_RNA_H5AD \
-  --tcr-path PATH_TO_TCR_TABLE \
+  --rna-h5ad-path PREPARED_OUTPUT_DIR/processed_rna.h5ad \
+  --tcr-path PREPARED_OUTPUT_DIR/merged_tcr_annotations.tsv.gz \
   --research-brief-path PATH_TO_BRIEF_TXT \
   --literature-path PATH_TO_PAPER_OR_FOLDER \
   --analysis-name MY_RUN \

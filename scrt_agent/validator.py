@@ -4,9 +4,15 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from pathlib import Path
 
-from .utils import load_tcr_table, normalize_tcr_columns
+from .utils import (
+    barcode_core,
+    infer_sample_column,
+    load_tcr_table,
+    make_merge_key,
+    normalize_barcode,
+    normalize_tcr_columns,
+)
 
 
 RAW_CLONOTYPE_RE = re.compile(r"^clonotype\d+$", re.IGNORECASE)
@@ -44,34 +50,64 @@ class ValidationSummary:
 class DatasetValidator:
     """Checks whether the paired scRNA + scTCR inputs are analysis-ready."""
 
-    def _normalize_barcode(self, value: object) -> str:
-        if value is None:
-            return ""
-        text = str(value).strip()
-        if not text or text.lower() == "nan":
-            return ""
-        return text.split("-")[0]
-
     def inspect_inputs(self, rna_h5ad_path: str, tcr_path: str) -> ValidationSummary:
         import anndata as ad
 
         summary = ValidationSummary()
         adata = ad.read_h5ad(rna_h5ad_path, backed="r")
         try:
-            obs_names = [str(idx) for idx in adata.obs_names]
-            obs_core = {self._normalize_barcode(idx) for idx in obs_names}
             obs_columns = {str(col).lower(): str(col) for col in adata.obs.columns}
+            rna_barcode_col = obs_columns.get("barcode")
+            rna_sample_col = infer_sample_column(adata.obs.columns)
+            rna_barcodes = (
+                adata.obs[rna_barcode_col].astype(str).tolist()
+                if rna_barcode_col is not None
+                else [str(idx) for idx in adata.obs_names]
+            )
+            rna_samples = (
+                adata.obs[rna_sample_col].tolist()
+                if rna_sample_col is not None
+                else [None] * len(rna_barcodes)
+            )
+
             tcr_df = normalize_tcr_columns(load_tcr_table(tcr_path))
+            tcr_sample_col = infer_sample_column(tcr_df.columns)
 
             tcr_barcodes = set()
             tcr_core = set()
             if "barcode" in tcr_df.columns:
                 tcr_barcodes = set(tcr_df["barcode"].dropna().astype(str))
-                tcr_core = {self._normalize_barcode(item) for item in tcr_barcodes}
+                tcr_core = {barcode_core(item) for item in tcr_barcodes}
 
-            exact_overlap = sum(1 for barcode in obs_names if barcode in tcr_barcodes)
-            core_overlap = sum(1 for barcode in obs_core if barcode and barcode in tcr_core)
-            coverage = max(exact_overlap, core_overlap) / max(len(obs_names), 1)
+            exact_overlap = sum(1 for barcode in rna_barcodes if normalize_barcode(barcode) in tcr_barcodes)
+            core_overlap = sum(1 for barcode in rna_barcodes if barcode_core(barcode) in tcr_core)
+
+            sample_exact_overlap = 0
+            sample_core_overlap = 0
+            if tcr_sample_col is not None and rna_sample_col is not None and "barcode" in tcr_df.columns:
+                tcr_exact_keys = {
+                    make_merge_key(barcode, sample, use_core=False)
+                    for barcode, sample in zip(tcr_df["barcode"], tcr_df[tcr_sample_col])
+                    if make_merge_key(barcode, sample, use_core=False)
+                }
+                tcr_core_keys = {
+                    make_merge_key(barcode, sample, use_core=True)
+                    for barcode, sample in zip(tcr_df["barcode"], tcr_df[tcr_sample_col])
+                    if make_merge_key(barcode, sample, use_core=True)
+                }
+                sample_exact_overlap = sum(
+                    1
+                    for barcode, sample in zip(rna_barcodes, rna_samples)
+                    if make_merge_key(barcode, sample, use_core=False) in tcr_exact_keys
+                )
+                sample_core_overlap = sum(
+                    1
+                    for barcode, sample in zip(rna_barcodes, rna_samples)
+                    if make_merge_key(barcode, sample, use_core=True) in tcr_core_keys
+                )
+
+            best_overlap = max(exact_overlap, core_overlap, sample_exact_overlap, sample_core_overlap)
+            coverage = best_overlap / max(len(rna_barcodes), 1)
 
             summary.metrics.update(
                 {
@@ -81,6 +117,8 @@ class DatasetValidator:
                     "tcr_unique_barcodes": len(tcr_barcodes),
                     "exact_overlap_cells": exact_overlap,
                     "core_overlap_cells": core_overlap,
+                    "sample_exact_overlap_cells": sample_exact_overlap,
+                    "sample_core_overlap_cells": sample_core_overlap,
                     "paired_coverage": f"{coverage:.3f}",
                 }
             )
@@ -93,6 +131,8 @@ class DatasetValidator:
                 summary.strengths.append("RNA metadata contains a sample-like column.")
             else:
                 summary.warnings.append("RNA metadata lacks a clear sample identifier.")
+            if "barcode" in obs_columns:
+                summary.strengths.append("RNA metadata contains a barcode column, so prefixed obs_names are safe.")
 
             if coverage >= 0.25:
                 summary.strengths.append("RNA/TCR overlap is high enough for joint analyses.")
@@ -101,11 +141,7 @@ class DatasetValidator:
             else:
                 summary.warnings.append("RNA/TCR overlap is low; prioritize descriptive analyses.")
 
-            sample_col = None
-            for candidate in ("sample_key", "sample_id"):
-                if candidate in tcr_df.columns:
-                    sample_col = candidate
-                    break
+            sample_col = tcr_sample_col if tcr_sample_col in tcr_df.columns else None
 
             if "clonotype_id" in tcr_df.columns:
                 clonotypes = tcr_df["clonotype_id"].dropna().astype(str)

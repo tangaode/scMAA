@@ -178,7 +178,33 @@ def _load_tcr_table(path):
 def _normalize_barcode(value):
     if pd.isna(value):
         return np.nan
-    return str(value).strip().split("-")[0]
+    text = str(value).strip()
+    if ":" in text:
+        text = text.rsplit(":", 1)[-1]
+    return text.split("-")[0]
+
+def _normalize_barcode_exact(value):
+    if pd.isna(value):
+        return np.nan
+    text = str(value).strip()
+    if ":" in text:
+        text = text.rsplit(":", 1)[-1]
+    return text
+
+def _normalize_sample(value):
+    if pd.isna(value):
+        return np.nan
+    text = str(value).strip()
+    return text if text else np.nan
+
+def _make_merge_key(barcode, sample=None, use_core=False):
+    barcode_value = _normalize_barcode(barcode) if use_core else _normalize_barcode_exact(barcode)
+    if pd.isna(barcode_value) or not str(barcode_value).strip():
+        return np.nan
+    sample_value = _normalize_sample(sample)
+    if pd.isna(sample_value):
+        return str(barcode_value)
+    return f"{{sample_value}}::{{barcode_value}}"
 
 def _coerce_bool(value):
     if pd.isna(value):
@@ -222,6 +248,12 @@ def _prepare_tcr_table(df):
 
 def _sample_scope_column(df):
     for column in ("sample_key", "sample_id"):
+        if column in df.columns:
+            return column
+    return None
+
+def _sample_scope_column_obs(df):
+    for column in ("sample_key", "sample_id", "sample", "orig.ident", "donor", "patient"):
         if column in df.columns:
             return column
     return None
@@ -270,18 +302,56 @@ if needs_prefix:
     tcr_df.loc[mask, "clonotype_id"] = tcr_df.loc[mask, sample_scope].astype(str) + ":" + tcr_df.loc[mask, "clonotype_id"].astype(str)
     clonotype_scope = f"prefixed_by_{{sample_scope}}"
 
-adata_rna.obs["barcode"] = adata_rna.obs_names.astype(str)
+if "barcode" in adata_rna.obs.columns:
+    adata_rna.obs["barcode"] = adata_rna.obs["barcode"].astype(str)
+else:
+    adata_rna.obs["barcode"] = adata_rna.obs_names.astype(str)
+adata_rna.obs["barcode_exact"] = adata_rna.obs["barcode"].map(_normalize_barcode_exact)
 adata_rna.obs["barcode_core"] = adata_rna.obs["barcode"].map(_normalize_barcode)
+
+rna_sample_scope = _sample_scope_column_obs(adata_rna.obs)
+tcr_sample_scope = _sample_scope_column(tcr_df)
+adata_rna.obs["sample_merge_key"] = adata_rna.obs.apply(
+    lambda row: _make_merge_key(row["barcode"], row[rna_sample_scope] if rna_sample_scope else np.nan, use_core=False),
+    axis=1,
+)
+adata_rna.obs["sample_merge_key_core"] = adata_rna.obs.apply(
+    lambda row: _make_merge_key(row["barcode"], row[rna_sample_scope] if rna_sample_scope else np.nan, use_core=True),
+    axis=1,
+)
+if tcr_sample_scope:
+    tcr_df["sample_merge_key"] = [
+        _make_merge_key(barcode, sample, use_core=False)
+        for barcode, sample in zip(tcr_df["barcode"], tcr_df[tcr_sample_scope])
+    ]
+    tcr_df["sample_merge_key_core"] = [
+        _make_merge_key(barcode, sample, use_core=True)
+        for barcode, sample in zip(tcr_df["barcode"], tcr_df[tcr_sample_scope])
+    ]
 
 tcr_cell_exact = _aggregate_tcr_by_column(tcr_df, "barcode")
 tcr_cell_core = _aggregate_tcr_by_column(tcr_df, "barcode_core")
+tcr_cell_sample_exact = _aggregate_tcr_by_column(tcr_df, "sample_merge_key") if "sample_merge_key" in tcr_df.columns else pd.DataFrame()
+tcr_cell_sample_core = _aggregate_tcr_by_column(tcr_df, "sample_merge_key_core") if "sample_merge_key_core" in tcr_df.columns else pd.DataFrame()
 
-exact_overlap = int(adata_rna.obs["barcode"].isin(tcr_cell_exact.index).sum())
+exact_overlap = int(adata_rna.obs["barcode_exact"].isin(tcr_cell_exact.index).sum())
 core_overlap = int(adata_rna.obs["barcode_core"].isin(tcr_cell_core.index).sum())
-merge_mode = "exact" if exact_overlap >= core_overlap else "barcode_core"
+sample_exact_overlap = int(adata_rna.obs["sample_merge_key"].isin(tcr_cell_sample_exact.index).sum()) if not tcr_cell_sample_exact.empty else 0
+sample_core_overlap = int(adata_rna.obs["sample_merge_key_core"].isin(tcr_cell_sample_core.index).sum()) if not tcr_cell_sample_core.empty else 0
+overlap_modes = {{
+    "sample_exact": sample_exact_overlap,
+    "sample_barcode_core": sample_core_overlap,
+    "exact": exact_overlap,
+    "barcode_core": core_overlap,
+}}
+merge_mode = max(overlap_modes, key=overlap_modes.get)
 
-if merge_mode == "exact":
-    adata_rna.obs = adata_rna.obs.join(tcr_cell_exact, on="barcode")
+if merge_mode == "sample_exact":
+    adata_rna.obs = adata_rna.obs.join(tcr_cell_sample_exact, on="sample_merge_key")
+elif merge_mode == "sample_barcode_core":
+    adata_rna.obs = adata_rna.obs.join(tcr_cell_sample_core, on="sample_merge_key_core")
+elif merge_mode == "exact":
+    adata_rna.obs = adata_rna.obs.join(tcr_cell_exact, on="barcode_exact")
 else:
     adata_rna.obs = adata_rna.obs.join(tcr_cell_core, on="barcode_core")
 
@@ -298,6 +368,8 @@ print(f"TCR rows: {{len(tcr_df)}}")
 print(f"TCR unique barcodes: {{tcr_df['barcode'].nunique()}}")
 print(f"Exact barcode overlap: {{exact_overlap}}")
 print(f"Core barcode overlap: {{core_overlap}}")
+print(f"Sample-aware exact overlap: {{sample_exact_overlap}}")
+print(f"Sample-aware core overlap: {{sample_core_overlap}}")
 print(f"Chosen merge mode: {{merge_mode}}")
 print(f"Clonotype scope: {{clonotype_scope}}")
 print(f"Cells with TCR annotations after merge: {{int(adata_rna.obs['has_tcr'].sum())}}")
