@@ -167,6 +167,8 @@ class ScRTDesktopApp(tk.Tk):
         ttk.Button(frame, text="Load Session", command=self.load_session).pack(fill="x", pady=3)
         ttk.Button(frame, text="Approve Selected Hypothesis", command=self.approve_selected_hypothesis).pack(fill="x", pady=3)
         ttk.Button(frame, text="Run Approved Analysis", command=self.run_analysis).pack(fill="x", pady=3)
+        ttk.Button(frame, text="Open Final Hypothesis", command=self.open_final_hypothesis).pack(fill="x", pady=3)
+        ttk.Button(frame, text="Open Figure Status", command=self.open_figure_status).pack(fill="x", pady=3)
         ttk.Button(frame, text="Open Session Folder", command=self.open_session_folder).pack(fill="x", pady=3)
 
     def _build_candidates_panel(self, parent) -> None:
@@ -431,6 +433,40 @@ class ScRTDesktopApp(tk.Tk):
             os.startfile(str(self.current_session_dir))
         except Exception as exc:  # pragma: no cover
             messagebox.showerror("Open folder failed", str(exc))
+
+    def open_final_hypothesis(self) -> None:
+        if self.current_session_dir is None:
+            messagebox.showwarning("No session", "Generate, load, or run a session first.")
+            return
+        executed_path = self.current_session_dir / "executed_hypotheses.txt"
+        approved_path = self.current_session_dir / "approved_hypothesis.txt"
+        target = executed_path if executed_path.exists() else approved_path
+        if not target.exists():
+            messagebox.showwarning(
+                "Missing file",
+                "No final hypothesis file was found yet. Run the session first or approve a hypothesis.",
+            )
+            return
+        try:
+            os.startfile(str(target))
+        except Exception as exc:  # pragma: no cover
+            messagebox.showerror("Open file failed", str(exc))
+
+    def open_figure_status(self) -> None:
+        if self.current_session_dir is None:
+            messagebox.showwarning("No session", "Generate, load, or run a session first.")
+            return
+        status_path = self.current_session_dir / "figure_status.txt"
+        if not status_path.exists():
+            messagebox.showwarning(
+                "Missing file",
+                "No figure status file was found. Run the analysis with figure generation enabled first.",
+            )
+            return
+        try:
+            os.startfile(str(status_path))
+        except Exception as exc:  # pragma: no cover
+            messagebox.showerror("Open file failed", str(exc))
 
     def _browse_raw_input_folder(self) -> None:
         directory = filedialog.askdirectory(title="Select extracted raw data directory")
