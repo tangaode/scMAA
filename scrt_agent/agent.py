@@ -585,7 +585,9 @@ class ScRTAgent:
         past_analyses = ""
         notebook_paths: list[Path] = []
         ledger_summaries: list[str] = []
+        executed_hypotheses: list[str] = []
         figure_result: FigureResult | None = None
+        figure_error: str | None = None
 
         self.logger.info(
             f"Starting scRT-agent run with {total_analyses} analyses. "
@@ -601,6 +603,7 @@ class ScRTAgent:
                 analysis_idx=analysis_idx,
                 seeded_hypothesis=seeded_hypothesis,
             )
+            executed_hypotheses.append(analysis.hypothesis)
             past_analyses, research_ledger = self.executor.execute_idea(
                 analysis=analysis,
                 past_analyses=past_analyses,
@@ -615,7 +618,39 @@ class ScRTAgent:
             try:
                 figure_result = self._build_publication_figure()
             except Exception as exc:
+                figure_error = str(exc)
                 self.logger.warning(f"Publication figure generation failed: {exc}")
+
+        executed_hypotheses_path = self.output_dir / "executed_hypotheses.txt"
+        executed_lines = [f"Analysis {idx + 1}: {text}" for idx, text in enumerate(executed_hypotheses)]
+        executed_hypotheses_path.write_text(
+            "\n".join(executed_lines) + ("\n" if executed_lines else ""),
+            encoding="utf-8",
+        )
+
+        seeded_hypotheses_path: Path | None = None
+        if seeded:
+            seeded_hypotheses_path = self.output_dir / "seeded_hypotheses.txt"
+            seeded_lines = [f"Analysis {idx + 1}: {text}" for idx, text in enumerate(seeded)]
+            seeded_hypotheses_path.write_text("\n".join(seeded_lines) + "\n", encoding="utf-8")
+
+        figure_status_path: Path | None = None
+        if self.generate_publication_figure:
+            figure_status_path = self.output_dir / "figure_status.txt"
+            if figure_result is not None:
+                figure_status_path.write_text(
+                    "status: success\n"
+                    f"png: {figure_result.png_path}\n"
+                    f"pdf: {figure_result.pdf_path}\n"
+                    f"summary: {figure_result.summary_path}\n",
+                    encoding="utf-8",
+                )
+            else:
+                figure_status_path.write_text(
+                    "status: failed\n"
+                    f"reason: {figure_error or 'unknown error'}\n",
+                    encoding="utf-8",
+                )
 
         summary_path = self.output_dir / "run_summary.txt"
         summary_lines = [
@@ -627,6 +662,17 @@ class ScRTAgent:
             f"Model (execution support): {self.execution_model}",
             f"Vision model: {self.vision_model}",
             f"Detected packages: {self.available_packages}",
+            f"Executed hypotheses file: {executed_hypotheses_path}",
+        ]
+        if seeded_hypotheses_path is not None:
+            summary_lines.append(f"Seeded hypotheses file: {seeded_hypotheses_path}")
+        if figure_status_path is not None:
+            summary_lines.append(f"Figure status file: {figure_status_path}")
+        summary_lines.extend(
+            [
+            "",
+            "Executed hypotheses",
+            "\n".join(executed_lines) or "None",
             "",
             "RNA summary",
             self.rna_summary,
@@ -657,7 +703,8 @@ class ScRTAgent:
             "",
             "Generated notebooks",
             "\n".join(str(path) for path in notebook_paths) or "None",
-        ]
+            ]
+        )
         if figure_result is not None:
             summary_lines.extend(
                 [
@@ -666,6 +713,15 @@ class ScRTAgent:
                     f"PNG: {figure_result.png_path}",
                     f"PDF: {figure_result.pdf_path}",
                     f"Summary: {figure_result.summary_path}",
+                ]
+            )
+        elif self.generate_publication_figure:
+            summary_lines.extend(
+                [
+                    "",
+                    "Publication figure",
+                    "Status: failed",
+                    f"Reason: {figure_error or 'unknown error'}",
                 ]
             )
         summary_path.write_text("\n".join(summary_lines), encoding="utf-8")

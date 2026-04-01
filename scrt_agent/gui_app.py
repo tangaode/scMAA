@@ -413,6 +413,13 @@ class ScRTDesktopApp(tk.Tk):
             hypothesis = approved_path.read_text(encoding="utf-8").strip()
             summary_path = agent.run(seeded_hypotheses=[hypothesis])
             self._queue_log(f"Run summary: {summary_path}\n")
+            executed_path = self.current_session_dir / "executed_hypotheses.txt"
+            if executed_path.exists():
+                self._queue_log(f"Executed hypotheses: {executed_path}\n")
+            figure_status_path = self.current_session_dir / "figure_status.txt"
+            if figure_status_path.exists():
+                figure_status = figure_status_path.read_text(encoding="utf-8").strip()
+                self._queue_log(f"Figure status:\n{figure_status}\n")
 
         self._run_background("Run analysis", task)
 
