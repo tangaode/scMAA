@@ -163,13 +163,33 @@ class ScRTDesktopApp(tk.Tk):
     def _build_action_panel(self, parent) -> None:
         frame = ttk.LabelFrame(parent, text="3. Actions", padding=10)
         frame.pack(fill="x")
-        ttk.Button(frame, text="Generate Hypotheses", command=self.generate_hypotheses).pack(fill="x", pady=3)
-        ttk.Button(frame, text="Load Session", command=self.load_session).pack(fill="x", pady=3)
-        ttk.Button(frame, text="Approve Selected Hypothesis", command=self.approve_selected_hypothesis).pack(fill="x", pady=3)
-        ttk.Button(frame, text="Run Approved Analysis", command=self.run_analysis).pack(fill="x", pady=3)
-        ttk.Button(frame, text="Open Final Hypothesis", command=self.open_final_hypothesis).pack(fill="x", pady=3)
-        ttk.Button(frame, text="Open Figure Status", command=self.open_figure_status).pack(fill="x", pady=3)
-        ttk.Button(frame, text="Open Session Folder", command=self.open_session_folder).pack(fill="x", pady=3)
+        frame.columnconfigure(0, weight=1)
+        frame.columnconfigure(1, weight=1)
+
+        buttons = [
+            ("Generate Hypotheses", self.generate_hypotheses, 0, 0),
+            ("Load Session", self.load_session, 0, 1),
+            ("Approve Selected Hypothesis", self.approve_selected_hypothesis, 1, 0),
+            ("Run Approved Analysis", self.run_analysis, 1, 1),
+            ("Open Final Hypothesis", self.open_final_hypothesis, 2, 0),
+            ("Open Figure Status", self.open_figure_status, 2, 1),
+        ]
+        for text, command, row, column in buttons:
+            ttk.Button(frame, text=text, command=command).grid(
+                row=row,
+                column=column,
+                sticky="ew",
+                padx=3,
+                pady=3,
+            )
+        ttk.Button(frame, text="Open Session Folder", command=self.open_session_folder).grid(
+            row=3,
+            column=0,
+            columnspan=2,
+            sticky="ew",
+            padx=3,
+            pady=3,
+        )
 
     def _build_candidates_panel(self, parent) -> None:
         frame = ttk.LabelFrame(parent, text="Candidates And Review", padding=10)
