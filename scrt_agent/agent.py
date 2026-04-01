@@ -78,7 +78,7 @@ def _detect_available_packages() -> str:
 
 
 class ScRTAgent:
-    """CellVoyager-inspired agent for integrated scRNA + scTCR analysis."""
+    """Research-oriented agent for integrated scRNA + scTCR analysis."""
 
     def __init__(
         self,

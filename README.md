@@ -1,6 +1,6 @@
 # scRT-agent v2
 
-`scRT-agent v2` is a CellVoyager-inspired agent for integrated `scRNA-seq + scTCR` analysis, upgraded to behave more like a research scientist than a workflow runner.
+`scRT-agent v2` is a research-oriented agent for integrated `scRNA-seq + scTCR` analysis, designed to behave more like a research scientist than a workflow runner.
 
 It is designed for datasets where:
 - the transcriptome lives in a processed `AnnData` object (`.h5ad`)

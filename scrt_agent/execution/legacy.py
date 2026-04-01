@@ -29,7 +29,7 @@ def strip_code_fences(text: str) -> str:
 
 
 class LegacyNotebookExecutor:
-    """CellVoyager-style legacy executor using a persistent Jupyter kernel."""
+    """Notebook executor using a persistent Jupyter kernel."""
 
     def __init__(
         self,
