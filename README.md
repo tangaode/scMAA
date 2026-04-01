@@ -68,6 +68,21 @@ Set your API key:
 OPENAI_API_KEY=...
 ```
 
+## Desktop App
+
+If you do not want to use the command line, you can start the desktop window by double-clicking:
+
+- `launch_scRT_agent_gui.bat`
+
+The window lets you do these steps:
+
+- prepare raw data into `processed_rna.h5ad`
+- generate candidate hypotheses
+- add feedback and approve one hypothesis
+- run the analysis and save the results
+
+If your machine already has a Python environment for this project, this is the easiest way to use the tool.
+
 ## Main Run
 
 ```bash
@@ -147,3 +162,4 @@ If you only want to check one file first, open `run_summary.txt`.
 - This project expects processed input files, not raw sequencing files.
 - The research brief is the main input. Local papers are optional.
 - Results still need user review before they are treated as biological conclusions.
+- The desktop app is the easiest way to start. A fully packed `.exe` can be added later if needed.
