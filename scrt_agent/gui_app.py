@@ -14,7 +14,6 @@ from tkinter import filedialog, messagebox, ttk
 
 from .agent import ScRTAgent
 from .interactive import (
-    format_analysis_plan_markdown,
     format_candidate_menu_markdown,
     read_json,
     write_json,
@@ -169,10 +168,8 @@ class ScRTDesktopApp(tk.Tk):
         buttons = [
             ("Generate / Regenerate Hypotheses", self.generate_hypotheses, 0, 0),
             ("Load Session", self.load_session, 0, 1),
-            ("Revise And Approve Selected Hypothesis", self.approve_selected_hypothesis, 1, 0),
+            ("Approve Selected Hypothesis", self.approve_selected_hypothesis, 1, 0),
             ("Run Approved Analysis", self.run_analysis, 1, 1),
-            ("Open Final Hypothesis", self.open_final_hypothesis, 2, 0),
-            ("Open Figure Status", self.open_figure_status, 2, 1),
         ]
         for text, command, row, column in buttons:
             ttk.Button(frame, text=text, command=command).grid(
@@ -183,7 +180,7 @@ class ScRTDesktopApp(tk.Tk):
                 pady=3,
             )
         ttk.Button(frame, text="Open Session Folder", command=self.open_session_folder).grid(
-            row=3,
+            row=2,
             column=0,
             columnspan=2,
             sticky="ew",
@@ -192,7 +189,7 @@ class ScRTDesktopApp(tk.Tk):
         )
 
     def _build_candidates_panel(self, parent) -> None:
-        frame = ttk.LabelFrame(parent, text="Candidates And Review", padding=10)
+        frame = ttk.LabelFrame(parent, text="Candidates And Plan Review", padding=10)
         frame.grid(row=0, column=0, sticky="nsew", pady=(0, 10))
         frame.columnconfigure(1, weight=1)
         frame.rowconfigure(1, weight=1)
@@ -206,10 +203,10 @@ class ScRTDesktopApp(tk.Tk):
         self.candidate_detail = tk.Text(frame, wrap="word", width=70, height=18)
         self.candidate_detail.grid(row=1, column=1, sticky="nsew")
 
-        ttk.Label(frame, text="Feedback for generation or revision").grid(row=2, column=0, columnspan=2, sticky="w", pady=(10, 0))
+        ttk.Label(frame, text="Feedback for generation, scope, or analysis strategy").grid(row=2, column=0, columnspan=2, sticky="w", pady=(10, 0))
         ttk.Label(
             frame,
-            text="This text is sent to the model when you generate candidates and when you revise the selected hypothesis.",
+            text="Use this text to ask for more candidates, narrow the question, or tell the agent what analysis to do first.",
         ).grid(row=3, column=0, columnspan=2, sticky="w")
         self.feedback_text = tk.Text(frame, wrap="word", height=8)
         self.feedback_text.grid(row=4, column=0, columnspan=2, sticky="nsew")
@@ -390,6 +387,40 @@ class ScRTDesktopApp(tk.Tk):
         self.candidate_detail.delete("1.0", "end")
         self.candidate_detail.insert("1.0", "\n".join(lines))
 
+    def _show_approved_plan(self, payload: dict) -> None:
+        lines = self._plan_lines(payload)
+        self.candidate_detail.delete("1.0", "end")
+        self.candidate_detail.insert("1.0", "\n".join(lines))
+
+    def _plan_lines(self, payload: dict) -> list[str]:
+        lines = [
+            "Approved analysis plan",
+            "",
+            f"Hypothesis: {payload.get('hypothesis', '')}",
+            f"Analysis type: {payload.get('analysis_type', '')}",
+            "",
+            f"Priority question: {payload.get('priority_question', '')}",
+            "",
+            f"Evidence goal: {payload.get('evidence_goal', '')}",
+            "",
+            f"Decision rationale: {payload.get('decision_rationale', '')}",
+            "",
+            "Validation checks:",
+        ]
+        lines.extend(f"- {item}" for item in payload.get("validation_checks", []))
+        lines.extend(["", "Remaining plan:"])
+        lines.extend(f"{idx + 1}. {item}" for idx, item in enumerate(payload.get("analysis_plan", [])))
+        lines.extend(
+            [
+                "",
+                f"Code description: {payload.get('code_description', '')}",
+                "",
+                "Summary:",
+                payload.get("summary", ""),
+            ]
+        )
+        return lines
+
     def load_session(self) -> None:
         session_dir_text = filedialog.askdirectory(initialdir=self.output_home_var.get().strip() or str(self.project_root / "sessions"))
         if not session_dir_text:
@@ -404,6 +435,9 @@ class ScRTDesktopApp(tk.Tk):
         self.session_name_var.set(session_dir.name)
         self.output_home_var.set(str(session_dir.parent))
         self._show_candidates(payload)
+        approved_plan_path = session_dir / "approved_plan.json"
+        if approved_plan_path.exists():
+            self._show_approved_plan(read_json(approved_plan_path))
         self._append_log(f"Loaded session: {session_dir}\n")
 
     def approve_selected_hypothesis(self) -> None:
@@ -424,11 +458,15 @@ class ScRTDesktopApp(tk.Tk):
             if feedback_text:
                 hypothesis = agent.revise_hypothesis(hypothesis=hypothesis, user_feedback=feedback_text)
                 (self.current_session_dir / "user_feedback.txt").write_text(feedback_text + "\n", encoding="utf-8")
-            plan = agent.build_plan_from_hypothesis(hypothesis)
+            plan = agent.build_plan_from_hypothesis(hypothesis, user_strategy_feedback=feedback_text)
             (self.current_session_dir / "approved_hypothesis.txt").write_text(hypothesis + "\n", encoding="utf-8")
             write_json(self.current_session_dir / "approved_plan.json", plan.model_dump())
-            (self.current_session_dir / "approved_plan.md").write_text(format_analysis_plan_markdown(plan), encoding="utf-8")
+            (self.current_session_dir / "approved_plan.md").write_text("\n".join(self._plan_lines(plan.model_dump())) + "\n", encoding="utf-8")
+            if feedback_text:
+                (self.current_session_dir / "approved_strategy_feedback.txt").write_text(feedback_text + "\n", encoding="utf-8")
+            self.message_queue.put(("done", lambda payload=plan.model_dump(): self._show_approved_plan(payload)))
             self._queue_log(f"Approved hypothesis saved in {self.current_session_dir}\n")
+            self._queue_log("Approved plan regenerated. Review the plan on the right before you run the analysis.\n")
 
         self._run_background("Approve hypothesis", task)
 
@@ -442,8 +480,13 @@ class ScRTDesktopApp(tk.Tk):
 
         def task():
             agent = self._build_agent(analysis_name=self.current_session_dir.name, output_home=str(self.current_session_dir.parent))
-            hypothesis = approved_path.read_text(encoding="utf-8").strip()
-            summary_path = agent.run(seeded_hypotheses=[hypothesis])
+            approved_plan_path = self.current_session_dir / "approved_plan.json"
+            if approved_plan_path.exists():
+                approved_plan = read_json(approved_plan_path)
+                summary_path = agent.run_approved_plan(approved_plan)
+            else:
+                hypothesis = approved_path.read_text(encoding="utf-8").strip()
+                summary_path = agent.run(seeded_hypotheses=[hypothesis])
             self._queue_log(f"Run summary: {summary_path}\n")
             executed_path = self.current_session_dir / "executed_hypotheses.txt"
             if executed_path.exists():
@@ -463,40 +506,6 @@ class ScRTDesktopApp(tk.Tk):
             os.startfile(str(self.current_session_dir))
         except Exception as exc:  # pragma: no cover
             messagebox.showerror("Open folder failed", str(exc))
-
-    def open_final_hypothesis(self) -> None:
-        if self.current_session_dir is None:
-            messagebox.showwarning("No session", "Generate, load, or run a session first.")
-            return
-        executed_path = self.current_session_dir / "executed_hypotheses.txt"
-        approved_path = self.current_session_dir / "approved_hypothesis.txt"
-        target = executed_path if executed_path.exists() else approved_path
-        if not target.exists():
-            messagebox.showwarning(
-                "Missing file",
-                "No final hypothesis file was found yet. Run the session first or approve a hypothesis.",
-            )
-            return
-        try:
-            os.startfile(str(target))
-        except Exception as exc:  # pragma: no cover
-            messagebox.showerror("Open file failed", str(exc))
-
-    def open_figure_status(self) -> None:
-        if self.current_session_dir is None:
-            messagebox.showwarning("No session", "Generate, load, or run a session first.")
-            return
-        status_path = self.current_session_dir / "figure_status.txt"
-        if not status_path.exists():
-            messagebox.showwarning(
-                "Missing file",
-                "No figure status file was found. Run the analysis with figure generation enabled first.",
-            )
-            return
-        try:
-            os.startfile(str(status_path))
-        except Exception as exc:  # pragma: no cover
-            messagebox.showerror("Open file failed", str(exc))
 
     def _browse_raw_input_folder(self) -> None:
         directory = filedialog.askdirectory(title="Select extracted raw data directory")

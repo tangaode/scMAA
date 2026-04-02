@@ -10,7 +10,7 @@ from typing import Iterable
 from .deepresearch import DeepResearcher
 from .execution import LegacyNotebookExecutor
 from .figure_mode import FigureResult, build_publication_figure
-from .hypothesis import CandidateHypothesisMenu, HypothesisGenerator
+from .hypothesis import AnalysisPlan, CandidateHypothesisMenu, HypothesisGenerator
 from .literature import (
     LiteratureHypothesisMenu,
     LiteratureSummarizer,
@@ -320,13 +320,145 @@ class ScRTAgent:
         )
         return revision.revised_hypothesis
 
-    def build_plan_from_hypothesis(self, hypothesis: str):
+    def build_plan_from_hypothesis(self, hypothesis: str, user_strategy_feedback: str = ""):
         research_ledger = self._make_research_ledger()
         return self.hypothesis_generator.generate_analysis_from_hypothesis(
             hypothesis,
             past_analyses="",
             research_state_summary=research_ledger.to_prompt_text(),
             seed_context="User-approved hypothesis from interactive review.",
+            user_strategy_feedback=user_strategy_feedback,
+        )
+
+    def _finalize_run_outputs(
+        self,
+        *,
+        past_analyses: str,
+        notebook_paths: list[Path],
+        ledger_summaries: list[str],
+        executed_hypotheses: list[str],
+        seeded: list[str],
+        figure_result: FigureResult | None,
+        figure_error: str | None,
+    ) -> Path:
+        executed_hypotheses_path = self.output_dir / "executed_hypotheses.txt"
+        executed_lines = [f"Analysis {idx + 1}: {text}" for idx, text in enumerate(executed_hypotheses)]
+        executed_hypotheses_path.write_text(
+            "\n".join(executed_lines) + ("\n" if executed_lines else ""),
+            encoding="utf-8",
+        )
+
+        seeded_hypotheses_path: Path | None = None
+        if seeded:
+            seeded_hypotheses_path = self.output_dir / "seeded_hypotheses.txt"
+            seeded_lines = [f"Analysis {idx + 1}: {text}" for idx, text in enumerate(seeded)]
+            seeded_hypotheses_path.write_text("\n".join(seeded_lines) + "\n", encoding="utf-8")
+
+        figure_status_path: Path | None = None
+        if self.generate_publication_figure:
+            figure_status_path = write_figure_status_file(
+                self.output_dir,
+                figure_result=figure_result,
+                figure_error=figure_error,
+            )
+
+        summary_path = self.output_dir / "run_summary.txt"
+        summary_lines = [
+            f"Analysis name: {self.analysis_name}",
+            f"RNA input: {self.rna_h5ad_path}",
+            f"TCR input: {self.tcr_path}",
+            f"Research brief input: {self.research_brief_path}",
+            f"Model (planning): {self.hypothesis_model}",
+            f"Model (execution support): {self.execution_model}",
+            f"Vision model: {self.vision_model}",
+            f"Detected packages: {self.available_packages}",
+            f"Executed hypotheses file: {executed_hypotheses_path}",
+        ]
+        if seeded_hypotheses_path is not None:
+            summary_lines.append(f"Seeded hypotheses file: {seeded_hypotheses_path}")
+        if figure_status_path is not None:
+            summary_lines.append(f"Figure status file: {figure_status_path}")
+        summary_lines.extend(
+            [
+                "",
+                "Executed hypotheses",
+                "\n".join(executed_lines) or "None",
+                "",
+                "RNA summary",
+                self.rna_summary,
+                "",
+                "TCR summary",
+                self.tcr_summary,
+                "",
+                "Joint summary",
+                self.joint_summary,
+                "",
+                "Validation summary",
+                self.validation_summary,
+                "",
+                "Literature sources",
+                self.literature_sources,
+                "",
+                "Literature summary",
+                self.literature_summary,
+                "",
+                "Literature-derived hypothesis candidates",
+                self.literature_hypothesis_candidates,
+                "",
+                "Past analyses",
+                past_analyses or "No analyses were completed.",
+                "",
+                "Research ledger summaries",
+                "\n\n".join(ledger_summaries) or "No research ledger entries.",
+                "",
+                "Generated notebooks",
+                "\n".join(str(path) for path in notebook_paths) or "None",
+            ]
+        )
+        summary_path.write_text("\n".join(summary_lines), encoding="utf-8")
+        if figure_status_path is not None:
+            refresh_run_summary_from_artifacts(self.output_dir)
+        self.logger.info(f"Run complete. Summary written to {summary_path}")
+        return summary_path
+
+    def run_approved_plan(self, approved_plan: AnalysisPlan | dict) -> Path:
+        plan = approved_plan if isinstance(approved_plan, AnalysisPlan) else AnalysisPlan.model_validate(approved_plan)
+        notebook_paths: list[Path] = []
+        ledger_summaries: list[str] = []
+        figure_result: FigureResult | None = None
+        figure_error: str | None = None
+        research_ledger = self._make_research_ledger()
+
+        self.logger.info(
+            f"Starting scRT-agent run from approved plan. "
+            f"RNA={self.rna_h5ad_path}, TCR={self.tcr_path}, research_brief={self.research_brief_path}"
+        )
+
+        past_analyses, research_ledger = self.executor.execute_idea(
+            analysis=plan,
+            past_analyses="",
+            research_ledger=research_ledger,
+            analysis_idx=0,
+            seeded=True,
+        )
+        notebook_paths.append(self.output_dir / f"{self.analysis_name}_analysis_1.ipynb")
+        ledger_summaries.append(research_ledger.to_prompt_text())
+
+        if self.generate_publication_figure:
+            try:
+                figure_result = self._build_publication_figure()
+            except Exception as exc:
+                figure_error = str(exc)
+                self.logger.warning(f"Publication figure generation failed: {exc}")
+
+        return self._finalize_run_outputs(
+            past_analyses=past_analyses,
+            notebook_paths=notebook_paths,
+            ledger_summaries=ledger_summaries,
+            executed_hypotheses=[plan.hypothesis],
+            seeded=[plan.hypothesis],
+            figure_result=figure_result,
+            figure_error=figure_error,
         )
 
     def _build_publication_figure(self) -> FigureResult:
@@ -710,82 +842,12 @@ class ScRTAgent:
                 figure_error = str(exc)
                 self.logger.warning(f"Publication figure generation failed: {exc}")
 
-        executed_hypotheses_path = self.output_dir / "executed_hypotheses.txt"
-        executed_lines = [f"Analysis {idx + 1}: {text}" for idx, text in enumerate(executed_hypotheses)]
-        executed_hypotheses_path.write_text(
-            "\n".join(executed_lines) + ("\n" if executed_lines else ""),
-            encoding="utf-8",
+        return self._finalize_run_outputs(
+            past_analyses=past_analyses,
+            notebook_paths=notebook_paths,
+            ledger_summaries=ledger_summaries,
+            executed_hypotheses=executed_hypotheses,
+            seeded=seeded,
+            figure_result=figure_result,
+            figure_error=figure_error,
         )
-
-        seeded_hypotheses_path: Path | None = None
-        if seeded:
-            seeded_hypotheses_path = self.output_dir / "seeded_hypotheses.txt"
-            seeded_lines = [f"Analysis {idx + 1}: {text}" for idx, text in enumerate(seeded)]
-            seeded_hypotheses_path.write_text("\n".join(seeded_lines) + "\n", encoding="utf-8")
-
-        figure_status_path: Path | None = None
-        if self.generate_publication_figure:
-            figure_status_path = write_figure_status_file(
-                self.output_dir,
-                figure_result=figure_result,
-                figure_error=figure_error,
-            )
-
-        summary_path = self.output_dir / "run_summary.txt"
-        summary_lines = [
-            f"Analysis name: {self.analysis_name}",
-            f"RNA input: {self.rna_h5ad_path}",
-            f"TCR input: {self.tcr_path}",
-            f"Research brief input: {self.research_brief_path}",
-            f"Model (planning): {self.hypothesis_model}",
-            f"Model (execution support): {self.execution_model}",
-            f"Vision model: {self.vision_model}",
-            f"Detected packages: {self.available_packages}",
-            f"Executed hypotheses file: {executed_hypotheses_path}",
-        ]
-        if seeded_hypotheses_path is not None:
-            summary_lines.append(f"Seeded hypotheses file: {seeded_hypotheses_path}")
-        if figure_status_path is not None:
-            summary_lines.append(f"Figure status file: {figure_status_path}")
-        summary_lines.extend(
-            [
-            "",
-            "Executed hypotheses",
-            "\n".join(executed_lines) or "None",
-            "",
-            "RNA summary",
-            self.rna_summary,
-            "",
-            "TCR summary",
-            self.tcr_summary,
-            "",
-            "Joint summary",
-            self.joint_summary,
-            "",
-            "Validation summary",
-            self.validation_summary,
-            "",
-            "Literature sources",
-            self.literature_sources,
-            "",
-            "Literature summary",
-            self.literature_summary,
-            "",
-            "Literature-derived hypothesis candidates",
-            self.literature_hypothesis_candidates,
-            "",
-            "Past analyses",
-            past_analyses or "No analyses were completed.",
-            "",
-            "Research ledger summaries",
-            "\n\n".join(ledger_summaries) or "No research ledger entries.",
-            "",
-            "Generated notebooks",
-            "\n".join(str(path) for path in notebook_paths) or "None",
-            ]
-        )
-        summary_path.write_text("\n".join(summary_lines), encoding="utf-8")
-        if figure_status_path is not None:
-            refresh_run_summary_from_artifacts(self.output_dir)
-        self.logger.info(f"Run complete. Summary written to {summary_path}")
-        return summary_path

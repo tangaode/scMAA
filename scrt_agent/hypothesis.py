@@ -287,6 +287,7 @@ class HypothesisGenerator:
         past_analyses: str,
         research_state_summary: str,
         seed_context: str = "No literature seed has been selected.",
+        user_strategy_feedback: str = "",
     ) -> AnalysisPlan:
         prompt = self._read_prompt("analysis_from_hypothesis.txt").format(
             hypothesis=seeded_hypothesis,
@@ -302,6 +303,7 @@ class HypothesisGenerator:
             literature_summary=self.literature_summary,
             literature_candidates_summary=self.literature_candidates_summary,
             selected_literature_seed=seed_context,
+            user_strategy_feedback=user_strategy_feedback.strip() or "No extra strategy feedback.",
         )
         if self.log_prompts:
             self.logger.log_prompt("user", prompt, "seeded_hypothesis")

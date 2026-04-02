@@ -21,6 +21,9 @@ Requirements:
 - Do not repeat past analyses.
 - Choose a first step that produces real evidence, not generic housekeeping.
 - Prefer notebook helper functions over ad hoc category wrangling or repeated DE boilerplate.
+- Treat user strategy feedback as a high-priority planning constraint.
+- If the user asks to compare certain tissues, cell states, clones, or markers first, make that visible in the first step and in the analysis plan.
+- If the user narrows the scope, do not silently broaden it again.
 
 Coding guidelines:
 {CODING_GUIDELINES}
@@ -48,6 +51,9 @@ Literature-derived hypothesis candidates:
 
 Selected literature seed:
 {selected_literature_seed}
+
+User strategy feedback:
+{user_strategy_feedback}
 
 Research brief:
 {context_summary}
