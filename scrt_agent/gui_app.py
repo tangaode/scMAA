@@ -67,9 +67,9 @@ class ScRTDesktopApp(tk.Tk):
         self.message_queue: queue.Queue[tuple[str, object]] = queue.Queue()
         self.current_session_dir: Path | None = None
         self.current_candidates: list[dict] = []
-        self.current_candidate_plans: list[dict | None] = []
         self.current_task: threading.Thread | None = None
-        self.detail_header_var = tk.StringVar(value="Selected candidate")
+        self.hypothesis_header_var = tk.StringVar(value="Selected hypothesis")
+        self.plan_header_var = tk.StringVar(value="Draft or approved plan")
 
         self._build_variables()
         self._build_layout()
@@ -224,10 +224,10 @@ class ScRTDesktopApp(tk.Tk):
 
         buttons = [
             ("Generate / Regenerate Hypotheses", self.generate_hypotheses, 0, 0),
-            ("Load Session", self.load_session, 0, 1),
-            ("Regenerate Analysis Plan", self.regenerate_analysis_plan, 1, 0),
-            ("Approve Selected Hypothesis", self.approve_selected_hypothesis, 1, 1),
-            ("Run Approved Analysis", self.run_analysis, 2, 0),
+            ("Approve Hypothesis", self.approve_selected_hypothesis, 0, 1),
+            ("Generate / Regenerate Plan", self.regenerate_analysis_plan, 1, 0),
+            ("Approve Plan", self.approve_plan, 1, 1),
+            ("Run Analysis", self.run_analysis, 2, 0),
         ]
         for text, command, row, column in buttons:
             ttk.Button(frame, text=text, command=command).grid(row=row, column=column, sticky="ew", padx=3, pady=3)
@@ -246,26 +246,41 @@ class ScRTDesktopApp(tk.Tk):
         frame.grid(row=0, column=0, sticky="nsew", pady=(0, 10))
         frame.columnconfigure(1, weight=1)
         frame.rowconfigure(1, weight=1)
-        frame.rowconfigure(4, weight=1)
 
         ttk.Label(frame, text="Candidate hypotheses").grid(row=0, column=0, sticky="w")
-        ttk.Label(frame, textvariable=self.detail_header_var).grid(row=0, column=1, sticky="w")
         self.candidate_list = tk.Listbox(frame, height=12, exportselection=False)
         self.candidate_list.grid(row=1, column=0, sticky="nsw", padx=(0, 10))
         self.candidate_list.bind("<<ListboxSelect>>", self._on_candidate_selected)
 
-        self.candidate_detail = tk.Text(frame, wrap="word", width=74, height=18)
-        self.candidate_detail.grid(row=1, column=1, sticky="nsew")
+        right = ttk.Frame(frame)
+        right.grid(row=1, column=1, sticky="nsew")
+        right.columnconfigure(0, weight=1)
+        right.rowconfigure(1, weight=1)
+        right.rowconfigure(4, weight=1)
+        right.rowconfigure(7, weight=1)
+        right.rowconfigure(10, weight=1)
 
-        ttk.Label(frame, text="Feedback for generation, scope, or analysis strategy").grid(
-            row=2, column=0, columnspan=2, sticky="w", pady=(10, 0)
-        )
+        ttk.Label(right, textvariable=self.hypothesis_header_var).grid(row=0, column=0, sticky="w")
+        self.hypothesis_detail = tk.Text(right, wrap="word", width=74, height=12)
+        self.hypothesis_detail.grid(row=1, column=0, sticky="nsew")
+        ttk.Label(right, text="Hypothesis feedback").grid(row=2, column=0, sticky="w", pady=(8, 0))
         ttk.Label(
-            frame,
-            text="Use this text to ask for more candidates, narrow the question, or tell the agent what analysis to do first.",
-        ).grid(row=3, column=0, columnspan=2, sticky="w")
-        self.feedback_text = tk.Text(frame, wrap="word", height=8)
-        self.feedback_text.grid(row=4, column=0, columnspan=2, sticky="nsew")
+            right,
+            text="Use this text to ask for more candidates, narrow the question, or revise the selected hypothesis.",
+        ).grid(row=3, column=0, sticky="w")
+        self.hypothesis_feedback_text = tk.Text(right, wrap="word", height=5)
+        self.hypothesis_feedback_text.grid(row=4, column=0, sticky="nsew")
+
+        ttk.Label(right, textvariable=self.plan_header_var).grid(row=5, column=0, sticky="w", pady=(10, 0))
+        self.plan_detail = tk.Text(right, wrap="word", width=74, height=12)
+        self.plan_detail.grid(row=6, column=0, sticky="nsew")
+        ttk.Label(right, text="Plan feedback").grid(row=7, column=0, sticky="w", pady=(8, 0))
+        ttk.Label(
+            right,
+            text="Use this text only to change the analysis plan for the approved hypothesis.",
+        ).grid(row=8, column=0, sticky="w")
+        self.plan_feedback_text = tk.Text(right, wrap="word", height=5)
+        self.plan_feedback_text.grid(row=9, column=0, sticky="nsew")
 
     def _build_log_panel(self, parent) -> None:
         frame = ttk.LabelFrame(parent, text="Run Log", padding=10)
@@ -286,11 +301,17 @@ class ScRTDesktopApp(tk.Tk):
         self.log_text.insert("end", text)
         self.log_text.see("end")
 
-    def _set_detail_text(self, text: str, heading: str) -> None:
-        self.detail_header_var.set(heading)
-        self.candidate_detail.delete("1.0", "end")
-        self.candidate_detail.insert("1.0", text)
-        self.candidate_detail.yview_moveto(0.0)
+    def _set_hypothesis_text(self, text: str, heading: str) -> None:
+        self.hypothesis_header_var.set(heading)
+        self.hypothesis_detail.delete("1.0", "end")
+        self.hypothesis_detail.insert("1.0", text)
+        self.hypothesis_detail.yview_moveto(0.0)
+
+    def _set_plan_text(self, text: str, heading: str) -> None:
+        self.plan_header_var.set(heading)
+        self.plan_detail.delete("1.0", "end")
+        self.plan_detail.insert("1.0", text)
+        self.plan_detail.yview_moveto(0.0)
 
     def _queue_log(self, text: str) -> None:
         self.message_queue.put(("log", text))
@@ -429,7 +450,7 @@ class ScRTDesktopApp(tk.Tk):
         base.mkdir(parents=True, exist_ok=True)
         return base / name
 
-    def _write_session_config(self, session_dir: Path, feedback_text: str = "") -> None:
+    def _write_session_config(self, session_dir: Path, hypothesis_feedback: str = "", plan_feedback: str = "") -> None:
         config = {
             "analysis_mode": self._analysis_mode(),
             "rna_h5ad_path": self.rna_h5ad_var.get().strip(),
@@ -439,7 +460,8 @@ class ScRTDesktopApp(tk.Tk):
             "model_name": self.model_name_var.get().strip() or "gpt-4o",
             "with_figure": self.with_figure_var.get(),
             "log_prompts": self.log_prompts_var.get(),
-            "candidate_generation_feedback": feedback_text,
+            "hypothesis_feedback": hypothesis_feedback,
+            "plan_feedback": plan_feedback,
             "spatial_mapping_method": self.spatial_mapping_method_var.get().strip() or "auto",
         }
         if self._mode_is_spatial():
@@ -473,10 +495,14 @@ class ScRTDesktopApp(tk.Tk):
         self.spatial_mapping_method_var.set(config.get("spatial_mapping_method", "auto"))
         self.with_figure_var.set(bool(config.get("with_figure", True)))
         self.log_prompts_var.set(bool(config.get("log_prompts", False)))
-        feedback = config.get("candidate_generation_feedback", "")
-        if feedback:
-            self.feedback_text.delete("1.0", "end")
-            self.feedback_text.insert("1.0", feedback)
+        hypothesis_feedback = config.get("hypothesis_feedback", "")
+        if hypothesis_feedback:
+            self.hypothesis_feedback_text.delete("1.0", "end")
+            self.hypothesis_feedback_text.insert("1.0", hypothesis_feedback)
+        plan_feedback = config.get("plan_feedback", "")
+        if plan_feedback:
+            self.plan_feedback_text.delete("1.0", "end")
+            self.plan_feedback_text.insert("1.0", plan_feedback)
 
     def prepare_raw_data(self) -> None:
         raw_input = self.raw_input_var.get().strip()
@@ -543,84 +569,50 @@ class ScRTDesktopApp(tk.Tk):
 
     def generate_hypotheses(self) -> None:
         session_dir = self._session_dir()
-        feedback_text = self.feedback_text.get("1.0", "end").strip()
+        feedback_text = self.hypothesis_feedback_text.get("1.0", "end").strip()
 
         def task():
             session_dir.mkdir(parents=True, exist_ok=True)
             agent = self._build_agent(analysis_name=session_dir.name, output_home=str(session_dir.parent))
             menu = agent.prepare_candidate_hypotheses(user_feedback=feedback_text)
-            draft_plan_payloads: list[dict | None] = []
             write_json(session_dir / "candidate_hypotheses.json", menu.model_dump())
             (session_dir / "candidate_hypotheses.md").write_text(format_candidate_menu_markdown(menu), encoding="utf-8")
-            draft_plan_sections: list[str] = []
-            for idx, candidate in enumerate(menu.candidates, start=1):
-                try:
-                    draft_plan = agent.build_plan_from_hypothesis(
-                        candidate.hypothesis.strip(),
-                        user_strategy_feedback=feedback_text,
-                    )
-                    payload = draft_plan.model_dump()
-                    draft_plan_payloads.append(payload)
-                    draft_plan_sections.append(
-                        f"## Candidate {idx}: {candidate.title}\n\n" + "\n".join(self._plan_lines(payload, heading="Draft analysis plan"))
-                    )
-                except Exception as exc:
-                    draft_plan_payloads.append(None)
-                    draft_plan_sections.append(
-                        f"## Candidate {idx}: {candidate.title}\n\nDraft analysis plan generation failed: {exc}"
-                    )
-                    self._queue_log(f"Draft analysis plan generation failed for candidate {idx}: {exc}\n")
-            write_json(session_dir / "draft_plans.json", {"plans": draft_plan_payloads})
-            (session_dir / "draft_plans.md").write_text("\n\n".join(draft_plan_sections) + "\n", encoding="utf-8")
-            if draft_plan_payloads and draft_plan_payloads[0]:
-                top_hypothesis = menu.candidates[0].hypothesis.strip()
-                (session_dir / "draft_hypothesis.txt").write_text(top_hypothesis + "\n", encoding="utf-8")
-                write_json(session_dir / "draft_plan.json", draft_plan_payloads[0])
-                (session_dir / "draft_plan.md").write_text(
-                    "\n".join(self._plan_lines(draft_plan_payloads[0], heading="Draft analysis plan")) + "\n",
-                    encoding="utf-8",
-                )
-                if feedback_text:
-                    (session_dir / "draft_strategy_feedback.txt").write_text(feedback_text + "\n", encoding="utf-8")
+            for artifact_name in (
+                "draft_hypothesis.txt",
+                "approved_hypothesis.txt",
+                "draft_plan.json",
+                "draft_plan.md",
+                "approved_plan.json",
+                "approved_plan.md",
+                "user_feedback.txt",
+                "draft_strategy_feedback.txt",
+                "approved_strategy_feedback.txt",
+            ):
+                artifact_path = session_dir / artifact_name
+                if artifact_path.exists():
+                    artifact_path.unlink()
             if feedback_text:
                 (session_dir / "candidate_generation_feedback.txt").write_text(feedback_text + "\n", encoding="utf-8")
-            self._write_session_config(session_dir, feedback_text=feedback_text)
+            self._write_session_config(session_dir, hypothesis_feedback=feedback_text, plan_feedback="")
             self.current_session_dir = session_dir
             self.current_candidates = [item.model_dump() for item in menu.candidates]
-            self.message_queue.put(
-                (
-                    "done",
-                    lambda menu_payload=menu.model_dump(), draft_payloads=draft_plan_payloads: self._show_candidates_with_plan(
-                        menu_payload,
-                        draft_payloads,
-                    ),
-                )
-            )
+            self.message_queue.put(("done", lambda menu_payload=menu.model_dump(): self._show_candidates(menu_payload)))
             self._queue_log(f"Generated {len(menu.candidates)} candidate hypotheses.\n")
             if feedback_text:
                 self._queue_log(f"Candidate generation feedback applied: {feedback_text}\n")
-            if any(item is not None for item in draft_plan_payloads):
-                self._queue_log(
-                    "A draft analysis plan has been generated for each candidate. "
-                    "Select a candidate to review its paired plan on the right.\n"
-                )
+            self._queue_log("Select one candidate, then click Approve Hypothesis.\n")
 
         self._run_background("Generate hypotheses", task)
 
     def _show_candidates(self, payload: dict) -> None:
         self.candidate_list.delete(0, "end")
         self.current_candidates = payload.get("candidates", [])
-        if len(self.current_candidate_plans) != len(self.current_candidates):
-            self.current_candidate_plans = [None] * len(self.current_candidates)
         for idx, item in enumerate(self.current_candidates, start=1):
             self.candidate_list.insert("end", f"{idx}. {item.get('title', 'Untitled')}")
         if self.current_candidates:
             self.candidate_list.selection_set(0)
             self._render_candidate_detail(0)
-
-    def _show_candidates_with_plan(self, payload: dict, draft_payloads: list[dict | None]) -> None:
-        self.current_candidate_plans = list(draft_payloads)
-        self._show_candidates(payload)
+        self._set_plan_text("No plan has been generated yet.\n\nApprove a hypothesis first, then generate a draft plan.", "Draft or approved plan")
 
     def _on_candidate_selected(self, _event=None) -> None:
         if not self.candidate_list.curselection():
@@ -645,17 +637,7 @@ class ScRTDesktopApp(tk.Tk):
             "Cautions:",
         ]
         lines.extend(f"- {text}" for text in item.get("cautions", []))
-        plan_payload = self.current_candidate_plans[index] if index < len(self.current_candidate_plans) else None
-        if plan_payload is not None:
-            lines.extend(
-                [
-                    "",
-                    *self._plan_lines(plan_payload, heading="Draft analysis plan"),
-                ]
-            )
-            self._set_detail_text("\n".join(lines), "Selected candidate and draft plan")
-            return
-        self._set_detail_text("\n".join(lines), "Selected candidate")
+        self._set_hypothesis_text("\n".join(lines), "Selected hypothesis")
 
     def _plan_lines(self, payload: dict, heading: str = "Draft analysis plan") -> list[str]:
         lines = [
@@ -687,7 +669,7 @@ class ScRTDesktopApp(tk.Tk):
         return lines
 
     def _show_plan(self, payload: dict, heading: str) -> None:
-        self._set_detail_text("\n".join(self._plan_lines(payload, heading=heading)), heading)
+        self._set_plan_text("\n".join(self._plan_lines(payload, heading=heading)), heading)
 
     def load_session(self) -> None:
         session_dir_text = filedialog.askdirectory(initialdir=self.output_home_var.get().strip() or str(self.project_root / "sessions"))
@@ -703,12 +685,10 @@ class ScRTDesktopApp(tk.Tk):
         self.output_home_var.set(str(session_dir.parent))
         self._load_session_config(session_dir)
         payload = read_json(candidate_path)
-        draft_plans_path = session_dir / "draft_plans.json"
-        if draft_plans_path.exists():
-            self.current_candidate_plans = read_json(draft_plans_path).get("plans", [])
-        else:
-            self.current_candidate_plans = []
         self._show_candidates(payload)
+        approved_hypothesis_path = session_dir / "approved_hypothesis.txt"
+        if approved_hypothesis_path.exists():
+            self._set_hypothesis_text(approved_hypothesis_path.read_text(encoding="utf-8"), "Approved hypothesis")
         draft_plan_path = session_dir / "draft_plan.json"
         approved_plan_path = session_dir / "approved_plan.json"
         if draft_plan_path.exists():
@@ -718,8 +698,49 @@ class ScRTDesktopApp(tk.Tk):
         self._append_log(f"Loaded session: {session_dir}\n")
 
     def regenerate_analysis_plan(self) -> None:
+        if self.current_session_dir is None:
+            self.current_session_dir = self._session_dir()
+        approved_hypothesis_path = self.current_session_dir / "approved_hypothesis.txt"
+        if not approved_hypothesis_path.exists():
+            messagebox.showwarning("No approved hypothesis", "Approve a hypothesis first.")
+            return
+        feedback_text = self.plan_feedback_text.get("1.0", "end").strip()
+
+        def task():
+            agent = self._build_agent(analysis_name=self.current_session_dir.name, output_home=str(self.current_session_dir.parent))
+            hypothesis = approved_hypothesis_path.read_text(encoding="utf-8").strip()
+            plan = agent.build_plan_from_hypothesis(hypothesis, user_strategy_feedback=feedback_text)
+            (self.current_session_dir / "draft_hypothesis.txt").write_text(hypothesis + "\n", encoding="utf-8")
+            write_json(self.current_session_dir / "draft_plan.json", plan.model_dump())
+            (self.current_session_dir / "draft_plan.md").write_text(
+                "\n".join(self._plan_lines(plan.model_dump(), heading="Draft analysis plan")) + "\n",
+                encoding="utf-8",
+            )
+            if feedback_text:
+                (self.current_session_dir / "draft_strategy_feedback.txt").write_text(feedback_text + "\n", encoding="utf-8")
+            self._write_session_config(
+                self.current_session_dir,
+                hypothesis_feedback=self.hypothesis_feedback_text.get("1.0", "end").strip(),
+                plan_feedback=feedback_text,
+            )
+            self.message_queue.put(
+                (
+                    "done",
+                    lambda payload=plan.model_dump(): self._apply_regenerated_plan(payload),
+                )
+            )
+            self._queue_log(f"Draft analysis plan saved in {self.current_session_dir}\n")
+            self._queue_log("Review the draft plan on the right. If it looks good, click Approve Plan.\n")
+
+        self._run_background("Regenerate analysis plan", task)
+
+    def _apply_regenerated_plan(self, payload: dict) -> None:
+        self._append_log("Updated draft analysis plan is now shown on the right.\n")
+        self._show_plan(payload, "Draft analysis plan")
+
+    def approve_selected_hypothesis(self) -> None:
         if not self.current_candidates:
-            messagebox.showwarning("No candidates", "Generate or load a session first.")
+            messagebox.showwarning("No candidates", "Generate or load hypotheses first.")
             return
         if not self.candidate_list.curselection():
             messagebox.showwarning("No selection", "Please select a hypothesis.")
@@ -728,78 +749,46 @@ class ScRTDesktopApp(tk.Tk):
             self.current_session_dir = self._session_dir()
         selected_index = self.candidate_list.curselection()[0]
         selected = self.current_candidates[selected_index]
-        feedback_text = self.feedback_text.get("1.0", "end").strip()
+        feedback_text = self.hypothesis_feedback_text.get("1.0", "end").strip()
 
-        def task():
-            agent = self._build_agent(analysis_name=self.current_session_dir.name, output_home=str(self.current_session_dir.parent))
-            hypothesis = selected.get("hypothesis", "").strip()
-            if feedback_text:
-                hypothesis = agent.revise_hypothesis(hypothesis=hypothesis, user_feedback=feedback_text)
-                (self.current_session_dir / "user_feedback.txt").write_text(feedback_text + "\n", encoding="utf-8")
-            plan = agent.build_plan_from_hypothesis(hypothesis, user_strategy_feedback=feedback_text)
-            (self.current_session_dir / "draft_hypothesis.txt").write_text(hypothesis + "\n", encoding="utf-8")
-            write_json(self.current_session_dir / "draft_plan.json", plan.model_dump())
-            draft_plans_path = self.current_session_dir / "draft_plans.json"
-            draft_plans_payload = read_json(draft_plans_path).get("plans", []) if draft_plans_path.exists() else []
-            while len(draft_plans_payload) <= selected_index:
-                draft_plans_payload.append(None)
-            draft_plans_payload[selected_index] = plan.model_dump()
-            write_json(draft_plans_path, {"plans": draft_plans_payload})
-            (self.current_session_dir / "draft_plan.md").write_text(
-                "\n".join(self._plan_lines(plan.model_dump(), heading="Draft analysis plan")) + "\n",
-                encoding="utf-8",
-            )
-            if feedback_text:
-                (self.current_session_dir / "draft_strategy_feedback.txt").write_text(feedback_text + "\n", encoding="utf-8")
-            self._write_session_config(self.current_session_dir, feedback_text=feedback_text)
-            self.message_queue.put(
-                (
-                    "done",
-                    lambda payload=plan.model_dump(), revised_hypothesis=hypothesis, index=selected_index: self._apply_regenerated_plan(
-                        index,
-                        revised_hypothesis,
-                        payload,
-                    ),
-                )
-            )
-            self._queue_log(f"Draft analysis plan saved in {self.current_session_dir}\n")
-            self._queue_log("Review the draft plan on the right. If it looks good, click Approve Selected Hypothesis.\n")
-
-        self._run_background("Regenerate analysis plan", task)
-
-    def _apply_regenerated_plan(self, index: int, revised_hypothesis: str, payload: dict) -> None:
-        if 0 <= index < len(self.current_candidates):
-            self.current_candidates[index]["hypothesis"] = revised_hypothesis
-            self.current_candidates[index]["preferred_analysis_type"] = payload.get(
-                "analysis_type",
-                self.current_candidates[index].get("preferred_analysis_type", ""),
-            )
-            self.current_candidates[index]["first_test"] = payload.get(
-                "priority_question",
-                self.current_candidates[index].get("first_test", ""),
-            )
-        while len(self.current_candidate_plans) < len(self.current_candidates):
-            self.current_candidate_plans.append(None)
-        if 0 <= index < len(self.current_candidate_plans):
-            self.current_candidate_plans[index] = payload
-        self._append_log("Updated draft analysis plan is now shown on the right.\n")
-        self._render_candidate_detail(index)
-
-    def approve_selected_hypothesis(self) -> None:
-        if self.current_session_dir is None:
-            self.current_session_dir = self._session_dir()
-        draft_hypothesis_path = self.current_session_dir / "draft_hypothesis.txt"
-        draft_plan_path = self.current_session_dir / "draft_plan.json"
-        if not draft_hypothesis_path.exists() or not draft_plan_path.exists():
-            messagebox.showwarning("No draft plan", "Generate a draft analysis plan first.")
-            return
+        agent = self._build_agent(analysis_name=self.current_session_dir.name, output_home=str(self.current_session_dir.parent))
+        hypothesis_text = selected.get("hypothesis", "").strip()
+        if feedback_text:
+            hypothesis_text = agent.revise_hypothesis(hypothesis=hypothesis_text, user_feedback=feedback_text)
+            (self.current_session_dir / "user_feedback.txt").write_text(feedback_text + "\n", encoding="utf-8")
+        self.current_candidates[selected_index]["hypothesis"] = hypothesis_text
 
         approved_hypothesis_path = self.current_session_dir / "approved_hypothesis.txt"
+        approved_hypothesis_md_path = self.current_session_dir / "approved_hypothesis.md"
+        approved_hypothesis_path.write_text(hypothesis_text + "\n", encoding="utf-8")
+        approved_hypothesis_md_path.write_text(
+            "Approved hypothesis\n\n" + hypothesis_text + "\n",
+            encoding="utf-8",
+        )
+        for artifact_name in ("draft_plan.json", "draft_plan.md", "approved_plan.json", "approved_plan.md"):
+            artifact_path = self.current_session_dir / artifact_name
+            if artifact_path.exists():
+                artifact_path.unlink()
+        self._write_session_config(
+            self.current_session_dir,
+            hypothesis_feedback=feedback_text,
+            plan_feedback=self.plan_feedback_text.get("1.0", "end").strip(),
+        )
+        self._render_candidate_detail(selected_index)
+        self._set_hypothesis_text(hypothesis_text, "Approved hypothesis")
+        self._set_plan_text("No plan has been generated for the approved hypothesis yet.", "Draft or approved plan")
+        self._append_log(f"Approved hypothesis saved in {self.current_session_dir}\n")
+
+    def approve_plan(self) -> None:
+        if self.current_session_dir is None:
+            self.current_session_dir = self._session_dir()
+        draft_plan_path = self.current_session_dir / "draft_plan.json"
+        if not draft_plan_path.exists():
+            messagebox.showwarning("No draft plan", "Generate a draft analysis plan first.")
+            return
         approved_plan_path = self.current_session_dir / "approved_plan.json"
         approved_plan_md_path = self.current_session_dir / "approved_plan.md"
         approved_feedback_path = self.current_session_dir / "approved_strategy_feedback.txt"
-
-        approved_hypothesis_path.write_text(draft_hypothesis_path.read_text(encoding="utf-8"), encoding="utf-8")
         approved_payload = read_json(draft_plan_path)
         write_json(approved_plan_path, approved_payload)
         approved_plan_md_path.write_text(
@@ -810,25 +799,20 @@ class ScRTDesktopApp(tk.Tk):
         if draft_feedback_path.exists():
             approved_feedback_path.write_text(draft_feedback_path.read_text(encoding="utf-8"), encoding="utf-8")
         self._show_plan(approved_payload, "Approved analysis plan")
-        self._append_log(f"Approved hypothesis saved in {self.current_session_dir}\n")
+        self._append_log(f"Approved plan saved in {self.current_session_dir}\n")
 
     def run_analysis(self) -> None:
         if self.current_session_dir is None:
             self.current_session_dir = self._session_dir()
-        approved_path = self.current_session_dir / "approved_hypothesis.txt"
-        if not approved_path.exists():
-            messagebox.showwarning("No approved hypothesis", "Approve a hypothesis first.")
+        approved_plan_path = self.current_session_dir / "approved_plan.json"
+        if not approved_plan_path.exists():
+            messagebox.showwarning("No approved plan", "Approve a plan first.")
             return
 
         def task():
             agent = self._build_agent(analysis_name=self.current_session_dir.name, output_home=str(self.current_session_dir.parent))
-            approved_plan_path = self.current_session_dir / "approved_plan.json"
-            if approved_plan_path.exists():
-                approved_plan = read_json(approved_plan_path)
-                summary_path = agent.run_approved_plan(approved_plan)
-            else:
-                hypothesis = approved_path.read_text(encoding="utf-8").strip()
-                summary_path = agent.run(seeded_hypotheses=[hypothesis])
+            approved_plan = read_json(approved_plan_path)
+            summary_path = agent.run_approved_plan(approved_plan)
             self._queue_log(f"Run summary: {summary_path}\n")
             figure_status_path = self.current_session_dir / "figure_status.txt"
             if figure_status_path.exists():
