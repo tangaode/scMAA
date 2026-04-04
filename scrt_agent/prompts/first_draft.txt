@@ -15,7 +15,8 @@ Return a structured `AnalysisPlan` with these fields:
 Hard requirements:
 - Use the notebook contract, validation notes, and coding guidelines below.
 - Do not repeat past analyses.
-- Favor a `joint` analysis when the overlap between RNA and TCR is usable.
+- This scRNA + scTCR workflow should prefer `joint` analysis when RNA-TCR overlap is usable.
+- Favor `joint` unless the first evidence step truly does not require clonotype, clone expansion, or repertoire support.
 - Choose the next step with the highest information gain, not the safest generic step.
 - The first step should produce evidence that can support, weaken, or reframe the hypothesis.
 - Avoid placeholder cleaning or metadata-filling steps unless the dataset evidence explicitly shows a problem.

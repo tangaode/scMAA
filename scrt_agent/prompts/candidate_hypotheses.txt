@@ -5,10 +5,13 @@ Return a structured `CandidateHypothesisMenu` with:
 - `candidates`
 
 Requirements:
-- Return 3 to 5 candidate hypotheses.
+- Return exactly 5 candidate hypotheses by default.
 - If the user feedback asks for an exact number of hypotheses, follow that exact number as long as it stays between 1 and 8.
 - User feedback may be written in Chinese, English, or mixed language. Read it literally.
 - Favor hypotheses that are scientifically meaningful, dataset-feasible, and easy for a user to compare.
+- For scRNA + scTCR, keep the menu `joint`-led by default when RNA-TCR overlap is usable.
+- Most candidates should be `joint`. Use `rna_only` only when the first evidence step truly does not need clonotype, clone expansion, or repertoire support.
+- Do not return a single-candidate menu unless the user explicitly asked for one.
 - Do not assume the user wants literature-inspired questions unless the literature summary clearly helps.
 - If the research brief already points to a preferred direction, make that visible in the ranking.
 - Each `first_test` should describe a concrete first notebook step, not vague future work.

@@ -19,6 +19,8 @@ Requirements:
 - Preserve the spirit of the seeded hypothesis, but refine it into something executable and falsifiable.
 - Use the validation summary and research state to avoid fragile or redundant plans.
 - Do not repeat past analyses.
+- This scRNA + scTCR workflow should prefer `joint` analysis when RNA-TCR overlap is usable.
+- Prefer `joint` plans unless the first evidence step truly does not need clonotype or repertoire metadata.
 - Choose a first step that produces real evidence, not generic housekeeping.
 - Prefer notebook helper functions over ad hoc category wrangling or repeated DE boilerplate.
 - Treat user strategy feedback as a high-priority planning constraint.

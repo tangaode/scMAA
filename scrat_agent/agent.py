@@ -242,6 +242,12 @@ class ScRATAgent:
             user_strategy_feedback=user_strategy_feedback,
         )
 
+    def _write_executed_hypotheses_artifact(self, executed_hypotheses: list[str]) -> Path:
+        executed_hypotheses_path = self.output_dir / "executed_hypotheses.txt"
+        executed_lines = [f"Analysis {idx + 1}: {text}" for idx, text in enumerate(executed_hypotheses)]
+        executed_hypotheses_path.write_text("\n".join(executed_lines) + ("\n" if executed_lines else ""), encoding="utf-8")
+        return executed_hypotheses_path
+
     def _build_publication_figure(self) -> FigureResult:
         figure_dir = self.output_dir / "figure"
         figure_name = self.publication_figure_name or f"{self.analysis_name}_publication_figure"
@@ -510,9 +516,8 @@ class ScRATAgent:
         figure_result: FigureResult | None,
         figure_error: str | None,
     ) -> Path:
-        executed_hypotheses_path = self.output_dir / "executed_hypotheses.txt"
+        executed_hypotheses_path = self._write_executed_hypotheses_artifact(executed_hypotheses)
         executed_lines = [f"Analysis {idx + 1}: {text}" for idx, text in enumerate(executed_hypotheses)]
-        executed_hypotheses_path.write_text("\n".join(executed_lines) + ("\n" if executed_lines else ""), encoding="utf-8")
 
         seeded_hypotheses_path: Path | None = None
         if seeded:
@@ -603,6 +608,7 @@ class ScRATAgent:
         )
         notebook_paths.append(self.output_dir / f"{self.analysis_name}_analysis_1.ipynb")
         ledger_summaries.append(research_ledger.to_prompt_text())
+        self._write_executed_hypotheses_artifact([plan.hypothesis])
         if self.generate_publication_figure:
             try:
                 figure_result = self._build_publication_figure()
@@ -647,6 +653,7 @@ class ScRATAgent:
             )
             notebook_paths.append(self.output_dir / f"{self.analysis_name}_analysis_{analysis_idx + 1}.ipynb")
             ledger_summaries.append(research_ledger.to_prompt_text())
+        self._write_executed_hypotheses_artifact(executed_hypotheses)
         if self.generate_publication_figure:
             try:
                 figure_result = self._build_publication_figure()

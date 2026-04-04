@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib.util
 import os
 from pathlib import Path
+import re
 from typing import Iterable
 
 from .deepresearch import DeepResearcher
@@ -163,6 +164,27 @@ def _detect_available_packages() -> str:
     return ", ".join(installed) or "pandas, numpy"
 
 
+def _extract_requested_candidate_count(user_feedback: str, default: int = 5) -> int:
+    text = user_feedback or ""
+    patterns = (
+        r"(\d+)\s*(?:candidate|candidates|hypotheses|hypothesis)\b",
+        r"(?:generate|return|give|make)\s*(\d+)",
+        r"(\d+)\s*个(?:候选假设|候选|假设)",
+        r"生成\s*(\d+)",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, text, flags=re.IGNORECASE)
+        if match:
+            value = int(match.group(1))
+            return max(1, min(8, value))
+    return default
+
+
+def _feedback_requests_joint(user_feedback: str) -> bool:
+    text = (user_feedback or "").lower()
+    return "joint" in text or "联合" in text
+
+
 class ScRTAgent:
     """Research-oriented agent for integrated scRNA + scTCR analysis."""
 
@@ -294,11 +316,43 @@ class ScRTAgent:
 
     def prepare_candidate_hypotheses(self, user_feedback: str = "") -> CandidateHypothesisMenu:
         research_ledger = self._make_research_ledger()
+        target_count = _extract_requested_candidate_count(user_feedback, default=5)
+        hard_constraints = [
+            f"Return exactly {target_count} candidate hypotheses.",
+            "This is the scRNA + scTCR workflow.",
+            "Keep the menu joint-led by default when RNA-TCR overlap is usable.",
+            "Most candidates should be joint. Use rna_only only when the first evidence step does not need clonotype or repertoire support.",
+            "Do not return a single-candidate menu unless the user explicitly asked for one.",
+            "Every candidate must include a concrete first notebook step.",
+        ]
+        effective_feedback = user_feedback.strip()
+        effective_feedback = (
+            effective_feedback + "\n\nHard menu constraints:\n- " + "\n- ".join(hard_constraints)
+            if effective_feedback
+            else "Hard menu constraints:\n- " + "\n- ".join(hard_constraints)
+        )
         menu = self.hypothesis_generator.generate_candidate_hypotheses(
             research_state_summary=research_ledger.to_prompt_text(),
             past_analyses="",
-            user_feedback=user_feedback,
+            user_feedback=effective_feedback,
         )
+        joint_light = sum(item.preferred_analysis_type == "joint" for item in menu.candidates) < max(3, target_count // 2 + 1)
+        needs_retry = (
+            len(menu.candidates) != target_count
+            or any(not item.first_test.strip() for item in menu.candidates)
+            or (joint_light and not ("rna_only" in (user_feedback or "").lower()))
+        )
+        if needs_retry:
+            retry_feedback = (
+                effective_feedback
+                + "\n\nThe previous menu did not satisfy the count or modality-balance requirements. "
+                  "Retry and satisfy every hard constraint exactly."
+            )
+            menu = self.hypothesis_generator.generate_candidate_hypotheses(
+                research_state_summary=research_ledger.to_prompt_text(),
+                past_analyses="",
+                user_feedback=retry_feedback,
+            )
         return menu
 
     def revise_hypothesis(self, *, hypothesis: str, user_feedback: str) -> str:
@@ -330,6 +384,15 @@ class ScRTAgent:
             user_strategy_feedback=user_strategy_feedback,
         )
 
+    def _write_executed_hypotheses_artifact(self, executed_hypotheses: list[str]) -> Path:
+        executed_hypotheses_path = self.output_dir / "executed_hypotheses.txt"
+        executed_lines = [f"Analysis {idx + 1}: {text}" for idx, text in enumerate(executed_hypotheses)]
+        executed_hypotheses_path.write_text(
+            "\n".join(executed_lines) + ("\n" if executed_lines else ""),
+            encoding="utf-8",
+        )
+        return executed_hypotheses_path
+
     def _finalize_run_outputs(
         self,
         *,
@@ -341,12 +404,8 @@ class ScRTAgent:
         figure_result: FigureResult | None,
         figure_error: str | None,
     ) -> Path:
-        executed_hypotheses_path = self.output_dir / "executed_hypotheses.txt"
+        executed_hypotheses_path = self._write_executed_hypotheses_artifact(executed_hypotheses)
         executed_lines = [f"Analysis {idx + 1}: {text}" for idx, text in enumerate(executed_hypotheses)]
-        executed_hypotheses_path.write_text(
-            "\n".join(executed_lines) + ("\n" if executed_lines else ""),
-            encoding="utf-8",
-        )
 
         seeded_hypotheses_path: Path | None = None
         if seeded:
@@ -444,6 +503,7 @@ class ScRTAgent:
         notebook_paths.append(self.output_dir / f"{self.analysis_name}_analysis_1.ipynb")
         ledger_summaries.append(research_ledger.to_prompt_text())
 
+        self._write_executed_hypotheses_artifact([plan.hypothesis])
         if self.generate_publication_figure:
             try:
                 figure_result = self._build_publication_figure()
@@ -835,6 +895,7 @@ class ScRTAgent:
             notebook_paths.append(self.output_dir / f"{self.analysis_name}_analysis_{analysis_idx + 1}.ipynb")
             ledger_summaries.append(research_ledger.to_prompt_text())
 
+        self._write_executed_hypotheses_artifact(executed_hypotheses)
         if self.generate_publication_figure:
             try:
                 figure_result = self._build_publication_figure()
