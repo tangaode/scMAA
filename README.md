@@ -2,23 +2,49 @@
 
 `scMAA` stands for `scMultiomic-Analysis-Agent`.
 
-This project supports three workflows in one desktop app:
+It is a desktop-first tool for three single-cell workflows:
 
 - `scRNA + scTCR`
 - `scRNA + spatial transcriptomics`
 - `scRNA + scATAC`
 
-The desktop app is the main entry point. Users can choose the workflow from a drop-down menu before preparing data or running the agent.
+Users can prepare raw data, review candidate hypotheses, adjust the analysis plan, run the notebook workflow, and export both standard summary figures and hypothesis-driven figures.
+
+## What It Does
+
+- prepares common raw inputs into processed `.h5ad` files
+- generates candidate hypotheses from the research brief
+- lets the user revise the plan before execution
+- runs notebook-based analysis
+- exports `run_summary.txt`, notebook outputs, and figures
+
+## Main Entry
+
+The easiest way to start is the desktop app:
+
+- `launch_scMAA_gui.bat`
+
+or:
+
+```bash
+python run_scmaa_gui.pyw
+```
+
+Inside the app, choose one mode:
+
+- `scRNA-TCR`
+- `scRNA-ST`
+- `scRNA-ATAC`
 
 ## Inputs
 
-For the main agent, provide:
+For the main analysis step, provide:
 
-- one processed RNA file in `.h5ad` format
+- one processed RNA `.h5ad`
 - one second modality file
-- one text file that explains the research question
+- one `research brief` text file
 
-The second modality depends on the selected workflow:
+The second modality file depends on the mode:
 
 - `scRNA + scTCR`: one TCR table such as `.tsv`, `.csv`, or `.txt`
 - `scRNA + spatial transcriptomics`: one processed spatial `.h5ad`
@@ -28,21 +54,11 @@ Optional:
 
 - local papers, reviews, or notes
 
-The main text input is the `research brief`. It does not need a strict template. A few short paragraphs or bullet points are enough.
+The `research brief` can be short. A few paragraphs or bullet points are enough.
 
-## Raw Data Preparation
+## Raw Preparation
 
 ### scRNA + scTCR
-
-If the raw files look like:
-
-- `*_barcodes.tsv.gz`
-- `*_features.tsv.gz`
-- `*_matrix.mtx.gz`
-- `*_filtered_contig_annotations.csv.gz`
-- or one `GSE*_RAW.tar`
-
-run:
 
 ```bash
 python run_scrt_prepare_data.py \
@@ -51,8 +67,6 @@ python run_scrt_prepare_data.py \
 ```
 
 ### scRNA + spatial transcriptomics
-
-Run:
 
 ```bash
 python run_scrst_prepare_data.py \
@@ -63,15 +77,13 @@ python run_scrst_prepare_data.py \
 
 ### scRNA + scATAC
 
-For common `10x multiome / cellranger-arc` raw folders or `RAW.tar`, run:
-
 ```bash
 python run_scrat_prepare_data.py \
   --raw-input-path PATH_TO_RAW_DIR_OR_RAW_TAR \
   --output-dir PREPARED_OUTPUT_DIR
 ```
 
-This workflow will try the built-in parser first. If the raw format is more complex, the agent can fall back to model-generated preprocessing code and continue automatically.
+For common `10x multiome / cellranger-arc` data, the built-in parser is used first. For more complex raw formats, the preprocessing step can fall back to model-generated code and continue automatically.
 
 ## Install
 
@@ -86,33 +98,11 @@ Set your API key:
 OPENAI_API_KEY=...
 ```
 
-If you also use DeepSeek, place `OPENAI.env` and `deepseek.env` in the project root.
-
-## Desktop App
-
-Double-click:
-
-- `launch_scMAA_gui.bat`
-
-or run:
-
-```bash
-python run_scmaa_gui.pyw
-```
-
-The desktop app lets you:
-
-- choose `scRNA-TCR`, `scRNA-ST`, or `scRNA-ATAC`
-- prepare raw data into processed input files
-- generate or regenerate candidate hypotheses
-- regenerate an analysis plan from user feedback
-- approve one hypothesis and one plan
-- run the analysis
-- save standard summary figures and hypothesis-driven figures
+You can also place `OPENAI.env` and `deepseek.env` in the project root.
 
 ## Command Line
 
-Mode-specific CLIs are still available for advanced use:
+Mode-specific CLIs are also available:
 
 - `run_scrt_agent.py`
 - `run_scrst_agent.py`
@@ -151,7 +141,9 @@ python run_scrat_agent.py \
   --with-figure
 ```
 
-## Main Outputs
+## Outputs
+
+Typical outputs:
 
 - `run_summary.txt`
 - `*_analysis_1.ipynb`
@@ -160,11 +152,10 @@ python run_scrat_agent.py \
 - `figure/*.pdf`
 - `logs/`
 
-If you only want to inspect one file first, open `run_summary.txt`.
+If you only open one file first, open `run_summary.txt`.
 
 ## Notes
 
-- `scMAA` is the product name. Internal package names are still kept as-is for compatibility.
-- The research brief is the main input. Local papers are optional.
+- `scMAA` is the product name. Internal package names are kept as they are for compatibility.
+- The research brief is the main input. Papers are optional.
 - Results still need user review before they are treated as biological conclusions.
-- The desktop app is the easiest way to start.
