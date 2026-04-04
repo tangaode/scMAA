@@ -1,4 +1,4 @@
-"""Research state and evidence ledger utilities for scRT-agent v2."""
+﻿"""Research state and evidence ledger utilities for scMAA."""
 
 from __future__ import annotations
 
@@ -86,3 +86,4 @@ class ResearchLedger:
     def to_markdown(self, max_entries: int = 6) -> str:
         text = self.to_prompt_text(max_entries=max_entries)
         return text if text else "No research ledger entries yet."
+

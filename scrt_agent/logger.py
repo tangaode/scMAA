@@ -1,4 +1,4 @@
-"""Logging utilities for scRT-agent."""
+﻿"""Logging utilities for scMAA."""
 
 from __future__ import annotations
 
@@ -57,3 +57,4 @@ class AgentLogger:
 
     def log_response(self, response_text: str, source: str) -> None:
         self._logger.info(f"RESPONSE/OUTPUT: {source}\n\n{response_text}")
+

@@ -1,4 +1,4 @@
-name: scrt-agent-v2
+name: scmaa
 channels:
   - conda-forge
   - defaults

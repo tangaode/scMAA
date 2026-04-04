@@ -1,0 +1,57 @@
+Revise the analysis plan after critique.
+
+Return a structured `AnalysisPlan` again. Fully populate all fields.
+
+Requirements:
+- Preserve the core scientific goal unless the critique shows it is not testable.
+- Fix the executability, evidence, or study-design issues raised by the critique.
+- Keep the plan proportionate to the remaining budget of {num_steps_left} steps.
+- `first_step_code` must be executable Python only.
+- Avoid no-op data cleaning steps unless the notebook summary shows a real issue.
+
+Original hypothesis:
+{original_hypothesis}
+
+Original analysis type:
+{original_analysis_type}
+
+Original priority question:
+{original_priority_question}
+
+Original evidence goal:
+{original_evidence_goal}
+
+Original decision rationale:
+{original_decision_rationale}
+
+Original validation checks:
+{original_validation_checks}
+
+Original plan:
+{original_plan}
+
+Original next-step code:
+```python
+{original_code}
+```
+
+Original code description:
+{original_code_description}
+
+Original summary:
+{original_summary}
+
+Critique:
+{critique}
+
+Coding guidelines:
+{CODING_GUIDELINES}
+
+Validation summary:
+{validation_summary}
+
+Research state:
+{research_state}
+
+Notebook summary:
+{notebook_summary}

@@ -1,0 +1,61 @@
+Design one novel and executable notebook analysis for integrated scRNA + spatial transcriptomics data.
+
+Return a structured `AnalysisPlan` with these fields:
+- `hypothesis`
+- `analysis_type` (`rna_only`, `spatial_only`, or `joint`)
+- `priority_question`
+- `evidence_goal`
+- `decision_rationale`
+- `validation_checks`
+- `analysis_plan`
+- `first_step_code`
+- `code_description`
+- `summary`
+
+Hard requirements:
+- Use the notebook contract, validation notes, and coding guidelines below.
+- Do not repeat past analyses.
+- Favor a `joint` analysis when RNA-to-spatial transfer or shared-gene analysis is usable.
+- Choose the next step with the highest information gain, not the safest generic step.
+- The first step should produce evidence that can support, weaken, or reframe the hypothesis.
+- Avoid placeholder cleaning or metadata-filling steps unless the dataset evidence explicitly shows a problem.
+- Prefer the notebook helper functions when they cover the needed operation.
+- `first_step_code` must use already loaded `adata_rna` and/or `adata_spatial`.
+- The code must print or plot something directly interpretable.
+- Keep the full plan to at most {max_iterations} steps.
+
+Coding guidelines:
+{CODING_GUIDELINES}
+
+RNA summary:
+{rna_summary}
+
+Spatial summary:
+{tcr_summary}
+
+Joint summary:
+{joint_summary}
+
+Validation summary:
+{validation_summary}
+
+Research state:
+{research_state}
+
+Literature summary:
+{literature_summary}
+
+Literature-derived hypothesis candidates:
+{literature_candidates_summary}
+
+Selected literature seed:
+{selected_literature_seed}
+
+Research brief:
+{context_summary}
+
+Deep Research background:
+{deepresearch_background}
+
+Past analyses:
+{past_analyses}

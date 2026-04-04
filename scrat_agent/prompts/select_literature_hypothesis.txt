@@ -1,0 +1,38 @@
+Select the best literature-derived seed hypothesis for this scRNA + scATAC dataset.
+
+Return a structured `LiteratureHypothesisChoice`.
+
+Requirements:
+- Favor candidates that are both biologically meaningful and feasible with the available RNA and ATAC data.
+- Avoid seeds that require methods or annotations not present in the dataset.
+- Prefer seeds that can be tested with paired subsets, expression-accessibility concordance, or gene-activity support.
+- If the dataset has many shared observation names and gene activity is available, prefer literature seeds that naturally lead to `joint` RNA-ATAC testing.
+- Do not select an RNA-only seed over a feasible joint seed unless the research brief explicitly narrows the work to RNA.
+- Prefer seeds that can be tested in a first step with paired cells, matched groups, and gene-level RNA-ATAC concordance.
+
+RNA summary:
+{rna_summary}
+
+ATAC summary:
+{tcr_summary}
+
+Joint summary:
+{joint_summary}
+
+Validation summary:
+{validation_summary}
+
+Research state:
+{research_state}
+
+Literature summary:
+{literature_summary}
+
+Literature-derived hypothesis candidates:
+{literature_candidates_summary}
+
+Research brief:
+{context_summary}
+
+Past analyses:
+{past_analyses}

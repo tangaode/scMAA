@@ -1,0 +1,62 @@
+Plan the first executable analysis for a scRNA + scATAC project.
+
+Return a structured `AnalysisPlan` with:
+- `hypothesis`
+- `analysis_type`
+- `priority_question`
+- `evidence_goal`
+- `decision_rationale`
+- `validation_checks`
+- `analysis_plan`
+- `first_step_code`
+- `code_description`
+- `summary`
+
+Requirements:
+- Pick one strong, feasible hypothesis.
+- Use the research brief and validation summary to avoid unsupported claims.
+- The first notebook step must produce evidence, not generic setup.
+- Prefer RNA-ATAC questions such as paired state differences, concordant marker programs, accessibility support for RNA-defined states, or tissue-stratified regulatory shifts.
+- If the dataset has many shared RNA-ATAC observation names, assume paired multiome analysis is feasible unless the validation summary says otherwise.
+- If gene activity is available, favor a `joint` hypothesis that can be tested with both expression and ATAC support.
+- Do not default to `rna_only` when the same question can be framed as a stronger RNA-ATAC joint analysis.
+- The first notebook step should use RNA and ATAC evidence together whenever the hypothesis is about genes, markers, states, or regulatory programs.
+
+Coding guidelines:
+{CODING_GUIDELINES}
+
+Maximum notebook steps:
+{max_iterations}
+
+RNA summary:
+{rna_summary}
+
+ATAC summary:
+{tcr_summary}
+
+Joint summary:
+{joint_summary}
+
+Validation summary:
+{validation_summary}
+
+Past analyses:
+{past_analyses}
+
+Research state:
+{research_state}
+
+Research brief:
+{context_summary}
+
+Literature summary:
+{literature_summary}
+
+Literature-derived hypothesis candidates:
+{literature_candidates_summary}
+
+Selected literature seed:
+{selected_literature_seed}
+
+Deep Research background:
+{deepresearch_background}

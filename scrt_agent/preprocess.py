@@ -1,4 +1,4 @@
-"""Raw-data preparation pipeline for scRT-agent."""
+﻿"""Raw-data preparation pipeline for scMAA."""
 
 from __future__ import annotations
 
@@ -594,3 +594,4 @@ def prepare_dataset(
         umap_cluster_path=umap_cluster_path,
         umap_annotation_path=umap_annotation_path,
     )
+

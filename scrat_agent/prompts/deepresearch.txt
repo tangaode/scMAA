@@ -1,0 +1,20 @@
+Generate extra background notes for a scRNA + scATAC project.
+
+Focus on:
+- likely RNA cell states
+- likely chromatin programs or accessibility-linked mechanisms
+- gene activity and accessibility caveats
+- paired multiome or matched-modality interpretation constraints
+- disease-relevant marker or pathway ideas that could be tested in the current dataset
+
+RNA summary:
+{rna_summary}
+
+ATAC summary:
+{tcr_summary}
+
+Joint summary:
+{joint_summary}
+
+Research brief:
+{context_summary}

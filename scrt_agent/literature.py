@@ -1,4 +1,4 @@
-"""Local literature ingestion and summarization for scRT-agent v2."""
+﻿"""Local literature ingestion and summarization for scMAA."""
 
 from __future__ import annotations
 
@@ -250,3 +250,4 @@ class LiteratureSummarizer:
             LiteratureHypothesisMenu,
             "literature_hypothesis_candidates",
         )
+

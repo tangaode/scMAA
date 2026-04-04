@@ -1,0 +1,23 @@
+Prepare concise background material for an integrated scRNA + spatial transcriptomics research agent.
+
+Focus on high-value analytical patterns and interpretation heuristics for:
+- clone expansion versus transcriptional state
+- tissue or sample differences in clonality
+- V/J gene usage biases
+- exhausted, activated, memory-like, cytotoxic, or proliferative programs associated with clone size
+- pitfalls when spot-level mixtures can confound cell-state interpretation
+- pitfalls when clonotype identifiers are only sample-local
+
+Prefer notebook-ready guidance over broad review prose.
+
+RNA summary:
+{rna_summary}
+
+Spatial summary:
+{tcr_summary}
+
+Joint summary:
+{joint_summary}
+
+Research brief:
+{context_summary}

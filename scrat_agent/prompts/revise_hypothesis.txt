@@ -1,0 +1,47 @@
+Revise the selected scRNA + scATAC hypothesis using user feedback.
+
+Return a structured `HypothesisRevision` with:
+- `revised_hypothesis`
+- `revision_rationale`
+- `preferred_analysis_type`
+- `retained_constraints`
+
+Requirements:
+- User feedback may be Chinese, English, or mixed language.
+- Default to minimal revision, not a full topic change.
+- Treat words like only, focus, narrow, limit, do not, 仅, 只, 聚焦, 限制 as scope constraints unless the user clearly asks for a new topic.
+- Preserve the original biological theme unless the user explicitly wants a different one.
+- Keep the revised hypothesis executable for this dataset.
+
+Original hypothesis:
+{hypothesis}
+
+User feedback:
+{user_feedback}
+
+RNA summary:
+{rna_summary}
+
+ATAC summary:
+{tcr_summary}
+
+Joint summary:
+{joint_summary}
+
+Validation summary:
+{validation_summary}
+
+Research state:
+{research_state}
+
+Literature summary:
+{literature_summary}
+
+Literature-derived hypothesis candidates:
+{literature_candidates_summary}
+
+Research brief:
+{context_summary}
+
+Past analyses:
+{past_analyses}

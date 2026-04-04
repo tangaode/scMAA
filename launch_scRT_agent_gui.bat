@@ -1,4 +1,4 @@
-@echo off
+﻿@echo off
 setlocal EnableDelayedExpansion
 
 set "SCRIPT_DIR=%~dp0"
@@ -26,4 +26,5 @@ for %%F in ("%SCRIPT_DIR%OPENAI.env" "%SCRIPT_DIR%deepseek.env" "%SCRIPT_DIR%.en
 )
 
 cd /d "%SCRIPT_DIR%"
-start "" "%PYTHON_EXE%" "%SCRIPT_DIR%run_scrt_gui.pyw"
+start "" "%PYTHON_EXE%" "%SCRIPT_DIR%run_scmaa_gui.pyw"
+

@@ -1,4 +1,4 @@
-"""Desktop GUI for scRT-agent."""
+﻿"""Desktop GUI for integrated scRNA-TCR, scRNA-ST, and scRNA-ATAC analysis."""
 
 from __future__ import annotations
 
@@ -12,18 +12,22 @@ from pathlib import Path
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
+from scrat_agent.agent import ScRATAgent
+from scrat_agent.preprocess import prepare_dataset as prepare_atac_dataset
+from scrst_agent.agent import ScRSTAgent
+from scrst_agent.preprocess import prepare_dataset as prepare_spatial_dataset
+
 from .agent import ScRTAgent
-from .interactive import (
-    format_candidate_menu_markdown,
-    read_json,
-    write_json,
-)
-from .preprocess import prepare_dataset
+from .interactive import format_candidate_menu_markdown, read_json, write_json
+from .preprocess import prepare_dataset as prepare_tcr_dataset
 
 try:
     from dotenv import load_dotenv
 except Exception:  # pragma: no cover
     load_dotenv = None
+
+
+ANALYSIS_MODES = ("scRNA-TCR", "scRNA-ST", "scRNA-ATAC")
 
 
 def load_local_env_files(project_root: Path) -> None:
@@ -49,16 +53,16 @@ class GuiTextHandler:
 
 
 class ScRTDesktopApp(tk.Tk):
-    """Simple desktop UI for preprocessing and interactive analysis."""
+    """Desktop UI for integrated single-cell workflows."""
 
     def __init__(self, project_root: str | Path) -> None:
         super().__init__()
         self.project_root = Path(project_root).resolve()
         load_local_env_files(self.project_root)
 
-        self.title("scRT-agent")
-        self.geometry("1300x900")
-        self.minsize(1120, 760)
+        self.title("scMAA")
+        self.geometry("1360x940")
+        self.minsize(1180, 800)
 
         self.message_queue: queue.Queue[tuple[str, object]] = queue.Queue()
         self.current_session_dir: Path | None = None
@@ -69,11 +73,15 @@ class ScRTDesktopApp(tk.Tk):
         self._build_layout()
         self._poll_queue()
         self._set_defaults()
+        self._update_mode_ui()
 
     def _build_variables(self) -> None:
         sessions_home = self.project_root / "sessions"
         prepared_home = self.project_root / "prepared"
+        self.analysis_mode_var = tk.StringVar(value=ANALYSIS_MODES[0])
+
         self.raw_input_var = tk.StringVar()
+        self.secondary_raw_input_var = tk.StringVar()
         self.prep_output_var = tk.StringVar(value=str(prepared_home))
         self.annotation_model_var = tk.StringVar(value="gpt-4o")
         self.annotation_notes_var = tk.StringVar()
@@ -83,12 +91,13 @@ class ScRTDesktopApp(tk.Tk):
         self.leiden_resolution_var = tk.StringVar(value="0.8")
 
         self.rna_h5ad_var = tk.StringVar()
-        self.tcr_path_var = tk.StringVar()
+        self.modality_input_var = tk.StringVar()
         self.research_brief_var = tk.StringVar()
         self.literature_path_var = tk.StringVar()
         self.session_name_var = tk.StringVar()
         self.output_home_var = tk.StringVar(value=str(sessions_home))
         self.model_name_var = tk.StringVar(value="gpt-4o")
+        self.spatial_mapping_method_var = tk.StringVar(value="auto")
         self.with_figure_var = tk.BooleanVar(value=True)
         self.log_prompts_var = tk.BooleanVar(value=False)
 
@@ -118,46 +127,92 @@ class ScRTDesktopApp(tk.Tk):
     def _build_prepare_panel(self, parent) -> None:
         frame = ttk.LabelFrame(parent, text="1. Raw Data Preparation", padding=10)
         frame.pack(fill="x", pady=(0, 10))
-        ttk.Label(frame, text="Raw input folder").grid(row=0, column=0, sticky="w", pady=4)
-        ttk.Entry(frame, textvariable=self.raw_input_var, width=42).grid(row=0, column=1, sticky="ew", pady=4)
-        ttk.Button(frame, text="Folder", command=self._browse_raw_input_folder).grid(row=0, column=2, sticky="ew", padx=(6, 0), pady=4)
-        ttk.Button(frame, text="RAW.tar", command=self._browse_raw_input_tar).grid(row=0, column=3, sticky="ew", padx=(6, 0), pady=4)
-        ttk.Label(frame, text="Use the folder that contains the extracted GEO files.").grid(
-            row=1, column=1, columnspan=3, sticky="w"
-        )
-
-        self._path_row(frame, "Output dir", self.prep_output_var, self._browse_prep_output_dir, row=2)
-        self._path_row(frame, "Annotation notes", self.annotation_notes_var, self._browse_annotation_notes, row=3, required=False)
-
-        ttk.Label(frame, text="Annotation model").grid(row=4, column=0, sticky="w", pady=4)
-        ttk.Entry(frame, textvariable=self.annotation_model_var, width=28).grid(row=4, column=1, sticky="ew", pady=4)
-        ttk.Label(frame, text="Min genes").grid(row=5, column=0, sticky="w", pady=4)
-        ttk.Entry(frame, textvariable=self.min_genes_var, width=10).grid(row=5, column=1, sticky="w", pady=4)
-        ttk.Label(frame, text="Min cells").grid(row=6, column=0, sticky="w", pady=4)
-        ttk.Entry(frame, textvariable=self.min_cells_var, width=10).grid(row=6, column=1, sticky="w", pady=4)
-        ttk.Label(frame, text="Max pct mt").grid(row=7, column=0, sticky="w", pady=4)
-        ttk.Entry(frame, textvariable=self.max_pct_mt_var, width=10).grid(row=7, column=1, sticky="w", pady=4)
-        ttk.Label(frame, text="Leiden resolution").grid(row=8, column=0, sticky="w", pady=4)
-        ttk.Entry(frame, textvariable=self.leiden_resolution_var, width=10).grid(row=8, column=1, sticky="w", pady=4)
-        ttk.Button(frame, text="Prepare Raw Data", command=self.prepare_raw_data).grid(row=9, column=0, columnspan=4, sticky="ew", pady=(8, 0))
         frame.columnconfigure(1, weight=1)
+
+        ttk.Label(frame, text="Analysis mode").grid(row=0, column=0, sticky="w", pady=4)
+        mode_box = ttk.Combobox(
+            frame,
+            textvariable=self.analysis_mode_var,
+            values=ANALYSIS_MODES,
+            state="readonly",
+            width=18,
+        )
+        mode_box.grid(row=0, column=1, sticky="w", pady=4)
+        mode_box.bind("<<ComboboxSelected>>", lambda _event: self._update_mode_ui())
+
+        self.prepare_hint_label = ttk.Label(frame, text="")
+        self.prepare_hint_label.grid(row=1, column=0, columnspan=4, sticky="w", pady=(0, 4))
+
+        self.raw_primary_label = ttk.Label(frame, text="Raw input folder")
+        self.raw_primary_label.grid(row=2, column=0, sticky="w", pady=4)
+        ttk.Entry(frame, textvariable=self.raw_input_var, width=42).grid(row=2, column=1, sticky="ew", pady=4)
+        ttk.Button(frame, text="Folder", command=self._browse_raw_input_folder).grid(row=2, column=2, sticky="ew", padx=(6, 0), pady=4)
+        ttk.Button(frame, text="RAW.tar", command=self._browse_raw_input_tar).grid(row=2, column=3, sticky="ew", padx=(6, 0), pady=4)
+
+        self.raw_secondary_label = ttk.Label(frame, text="Spatial raw folder")
+        self.raw_secondary_entry = ttk.Entry(frame, textvariable=self.secondary_raw_input_var, width=42)
+        self.raw_secondary_folder_button = ttk.Button(frame, text="Folder", command=self._browse_secondary_raw_input_folder)
+        self.raw_secondary_tar_button = ttk.Button(frame, text="RAW.tar", command=self._browse_secondary_raw_input_tar)
+
+        self._path_row(frame, "Output dir", self.prep_output_var, self._browse_prep_output_dir, row=4)
+        self._path_row(frame, "Annotation notes", self.annotation_notes_var, self._browse_annotation_notes, row=5, required=False)
+
+        ttk.Label(frame, text="Annotation model").grid(row=6, column=0, sticky="w", pady=4)
+        ttk.Entry(frame, textvariable=self.annotation_model_var, width=28).grid(row=6, column=1, sticky="ew", pady=4)
+        ttk.Label(frame, text="Min genes").grid(row=7, column=0, sticky="w", pady=4)
+        ttk.Entry(frame, textvariable=self.min_genes_var, width=10).grid(row=7, column=1, sticky="w", pady=4)
+        ttk.Label(frame, text="Min cells").grid(row=8, column=0, sticky="w", pady=4)
+        ttk.Entry(frame, textvariable=self.min_cells_var, width=10).grid(row=8, column=1, sticky="w", pady=4)
+        ttk.Label(frame, text="Max pct mt").grid(row=9, column=0, sticky="w", pady=4)
+        ttk.Entry(frame, textvariable=self.max_pct_mt_var, width=10).grid(row=9, column=1, sticky="w", pady=4)
+        ttk.Label(frame, text="Leiden resolution").grid(row=10, column=0, sticky="w", pady=4)
+        ttk.Entry(frame, textvariable=self.leiden_resolution_var, width=10).grid(row=10, column=1, sticky="w", pady=4)
+        ttk.Button(frame, text="Prepare Raw Data", command=self.prepare_raw_data).grid(row=11, column=0, columnspan=4, sticky="ew", pady=(8, 0))
 
     def _build_agent_panel(self, parent) -> None:
         frame = ttk.LabelFrame(parent, text="2. Interactive Analysis", padding=10)
         frame.pack(fill="x", pady=(0, 10))
-        self._path_row(frame, "RNA h5ad", self.rna_h5ad_var, self._browse_rna_h5ad)
-        self._path_row(frame, "TCR table", self.tcr_path_var, self._browse_tcr_path)
-        self._path_row(frame, "Research brief", self.research_brief_var, self._browse_brief)
-        self._path_row(frame, "Literature", self.literature_path_var, self._browse_literature, required=False)
-        self._path_row(frame, "Sessions dir", self.output_home_var, self._browse_sessions_dir)
-
-        ttk.Label(frame, text="Session name").grid(row=5, column=0, sticky="w", pady=4)
-        ttk.Entry(frame, textvariable=self.session_name_var).grid(row=5, column=1, sticky="ew", pady=4)
-        ttk.Label(frame, text="Model").grid(row=6, column=0, sticky="w", pady=4)
-        ttk.Entry(frame, textvariable=self.model_name_var, width=28).grid(row=6, column=1, sticky="ew", pady=4)
-        ttk.Checkbutton(frame, text="Generate figure", variable=self.with_figure_var).grid(row=7, column=0, columnspan=2, sticky="w", pady=2)
-        ttk.Checkbutton(frame, text="Save prompts", variable=self.log_prompts_var).grid(row=8, column=0, columnspan=2, sticky="w", pady=2)
         frame.columnconfigure(1, weight=1)
+
+        ttk.Label(frame, text="Analysis mode").grid(row=0, column=0, sticky="w", pady=4)
+        mode_box = ttk.Combobox(
+            frame,
+            textvariable=self.analysis_mode_var,
+            values=ANALYSIS_MODES,
+            state="readonly",
+            width=18,
+        )
+        mode_box.grid(row=0, column=1, sticky="w", pady=4)
+        mode_box.bind("<<ComboboxSelected>>", lambda _event: self._update_mode_ui())
+
+        self.agent_hint_label = ttk.Label(frame, text="")
+        self.agent_hint_label.grid(row=1, column=0, columnspan=4, sticky="w", pady=(0, 4))
+
+        self._path_row(frame, "RNA h5ad", self.rna_h5ad_var, self._browse_rna_h5ad, row=2)
+        self.modality_label = ttk.Label(frame, text="TCR table")
+        self.modality_label.grid(row=3, column=0, sticky="w", pady=4)
+        ttk.Entry(frame, textvariable=self.modality_input_var, width=42).grid(row=3, column=1, sticky="ew", pady=4)
+        ttk.Button(frame, text="Browse", command=self._browse_modality_input).grid(row=3, column=2, sticky="ew", padx=(6, 0), pady=4)
+        self._path_row(frame, "Research brief", self.research_brief_var, self._browse_brief, row=4)
+        self._path_row(frame, "Literature", self.literature_path_var, self._browse_literature, row=5, required=False)
+        self._path_row(frame, "Sessions dir", self.output_home_var, self._browse_sessions_dir, row=6)
+
+        ttk.Label(frame, text="Session name").grid(row=7, column=0, sticky="w", pady=4)
+        ttk.Entry(frame, textvariable=self.session_name_var).grid(row=7, column=1, sticky="ew", pady=4)
+        ttk.Label(frame, text="Model").grid(row=8, column=0, sticky="w", pady=4)
+        ttk.Entry(frame, textvariable=self.model_name_var, width=28).grid(row=8, column=1, sticky="ew", pady=4)
+        self.mapping_method_label = ttk.Label(frame, text="Spatial mapping")
+        self.mapping_method_combo = ttk.Combobox(
+            frame,
+            textvariable=self.spatial_mapping_method_var,
+            values=("auto", "marker_transfer", "cell2location"),
+            state="readonly",
+            width=18,
+        )
+        self.mapping_method_label.grid(row=9, column=0, sticky="w", pady=4)
+        self.mapping_method_combo.grid(row=9, column=1, sticky="w", pady=4)
+        ttk.Checkbutton(frame, text="Generate figure", variable=self.with_figure_var).grid(row=10, column=0, columnspan=2, sticky="w", pady=2)
+        ttk.Checkbutton(frame, text="Save prompts", variable=self.log_prompts_var).grid(row=11, column=0, columnspan=2, sticky="w", pady=2)
 
     def _build_action_panel(self, parent) -> None:
         frame = ttk.LabelFrame(parent, text="3. Actions", padding=10)
@@ -168,19 +223,15 @@ class ScRTDesktopApp(tk.Tk):
         buttons = [
             ("Generate / Regenerate Hypotheses", self.generate_hypotheses, 0, 0),
             ("Load Session", self.load_session, 0, 1),
-            ("Approve Selected Hypothesis", self.approve_selected_hypothesis, 1, 0),
-            ("Run Approved Analysis", self.run_analysis, 1, 1),
+            ("Regenerate Analysis Plan", self.regenerate_analysis_plan, 1, 0),
+            ("Approve Selected Hypothesis", self.approve_selected_hypothesis, 1, 1),
+            ("Run Approved Analysis", self.run_analysis, 2, 0),
         ]
         for text, command, row, column in buttons:
-            ttk.Button(frame, text=text, command=command).grid(
-                row=row,
-                column=column,
-                sticky="ew",
-                padx=3,
-                pady=3,
-            )
+            ttk.Button(frame, text=text, command=command).grid(row=row, column=column, sticky="ew", padx=3, pady=3)
+
         ttk.Button(frame, text="Open Session Folder", command=self.open_session_folder).grid(
-            row=2,
+            row=3,
             column=0,
             columnspan=2,
             sticky="ew",
@@ -193,17 +244,19 @@ class ScRTDesktopApp(tk.Tk):
         frame.grid(row=0, column=0, sticky="nsew", pady=(0, 10))
         frame.columnconfigure(1, weight=1)
         frame.rowconfigure(1, weight=1)
-        frame.rowconfigure(3, weight=1)
+        frame.rowconfigure(4, weight=1)
 
         ttk.Label(frame, text="Candidate hypotheses").grid(row=0, column=0, sticky="w")
         self.candidate_list = tk.Listbox(frame, height=12, exportselection=False)
         self.candidate_list.grid(row=1, column=0, sticky="nsw", padx=(0, 10))
         self.candidate_list.bind("<<ListboxSelect>>", self._on_candidate_selected)
 
-        self.candidate_detail = tk.Text(frame, wrap="word", width=70, height=18)
+        self.candidate_detail = tk.Text(frame, wrap="word", width=74, height=18)
         self.candidate_detail.grid(row=1, column=1, sticky="nsew")
 
-        ttk.Label(frame, text="Feedback for generation, scope, or analysis strategy").grid(row=2, column=0, columnspan=2, sticky="w", pady=(10, 0))
+        ttk.Label(frame, text="Feedback for generation, scope, or analysis strategy").grid(
+            row=2, column=0, columnspan=2, sticky="w", pady=(10, 0)
+        )
         ttk.Label(
             frame,
             text="Use this text to ask for more candidates, narrow the question, or tell the agent what analysis to do first.",
@@ -219,9 +272,7 @@ class ScRTDesktopApp(tk.Tk):
         self.log_text = tk.Text(frame, wrap="word", height=16)
         self.log_text.grid(row=0, column=0, sticky="nsew")
 
-    def _path_row(self, parent, label: str, variable: tk.StringVar, browse_command, *, row: int | None = None, required: bool = True) -> None:
-        if row is None:
-            row = parent.grid_size()[1]
+    def _path_row(self, parent, label: str, variable: tk.StringVar, browse_command, *, row: int, required: bool = True) -> None:
         ttk.Label(parent, text=label).grid(row=row, column=0, sticky="w", pady=4)
         ttk.Entry(parent, textvariable=variable, width=42).grid(row=row, column=1, sticky="ew", pady=4)
         ttk.Button(parent, text="Browse", command=browse_command).grid(row=row, column=2, sticky="ew", padx=(6, 0), pady=4)
@@ -269,23 +320,97 @@ class ScRTDesktopApp(tk.Tk):
         self.current_task = threading.Thread(target=runner, daemon=True)
         self.current_task.start()
 
-    def _build_agent(self, *, analysis_name: str, output_home: str) -> ScRTAgent:
+    def _analysis_mode(self) -> str:
+        mode = self.analysis_mode_var.get().strip()
+        return mode if mode in ANALYSIS_MODES else ANALYSIS_MODES[0]
+
+    def _mode_is_spatial(self) -> bool:
+        return self._analysis_mode() == "scRNA-ST"
+
+    def _mode_is_atac(self) -> bool:
+        return self._analysis_mode() == "scRNA-ATAC"
+
+    def _update_mode_ui(self) -> None:
+        mode = self._analysis_mode()
+        if self._mode_is_spatial():
+            self.raw_primary_label.config(text="scRNA raw folder")
+            self.raw_secondary_label.grid(row=3, column=0, sticky="w", pady=4)
+            self.raw_secondary_entry.grid(row=3, column=1, sticky="ew", pady=4)
+            self.raw_secondary_folder_button.grid(row=3, column=2, sticky="ew", padx=(6, 0), pady=4)
+            self.raw_secondary_tar_button.grid(row=3, column=3, sticky="ew", padx=(6, 0), pady=4)
+            self.prepare_hint_label.config(
+                text="Mode: scRNA-ST. Provide one raw input for scRNA and one raw input for spatial transcriptomics."
+            )
+            self.modality_label.config(text="Spatial h5ad")
+            self.agent_hint_label.config(
+                text="Mode: scRNA-ST. Provide a processed RNA h5ad together with a processed spatial h5ad."
+            )
+            self.mapping_method_label.grid()
+            self.mapping_method_combo.grid()
+        elif self._mode_is_atac():
+            self.raw_primary_label.config(text="Raw input folder")
+            self.raw_secondary_label.grid_remove()
+            self.raw_secondary_entry.grid_remove()
+            self.raw_secondary_folder_button.grid_remove()
+            self.raw_secondary_tar_button.grid_remove()
+            self.prepare_hint_label.config(
+                text="Mode: scRNA-ATAC. Provide one 10x multiome raw folder or RAW.tar. The preparation step will generate processed RNA and ATAC h5ad files."
+            )
+            self.modality_label.config(text="ATAC h5ad")
+            self.agent_hint_label.config(
+                text="Mode: scRNA-ATAC. Provide a processed RNA h5ad together with a processed ATAC h5ad."
+            )
+            self.mapping_method_label.grid_remove()
+            self.mapping_method_combo.grid_remove()
+        else:
+            self.raw_primary_label.config(text="Raw input folder")
+            self.raw_secondary_label.grid_remove()
+            self.raw_secondary_entry.grid_remove()
+            self.raw_secondary_folder_button.grid_remove()
+            self.raw_secondary_tar_button.grid_remove()
+            self.prepare_hint_label.config(
+                text="Mode: scRNA-TCR. Use one raw folder that contains extracted GEO RNA and TCR files."
+            )
+            self.modality_label.config(text="TCR table")
+            self.agent_hint_label.config(
+                text="Mode: scRNA-TCR. Provide a processed RNA h5ad together with a merged TCR table."
+            )
+            self.mapping_method_label.grid_remove()
+            self.mapping_method_combo.grid_remove()
+        self._append_log(f"Analysis mode set to {mode}\n")
+
+    def _build_agent(self, *, analysis_name: str, output_home: str):
         literature_paths = [self.literature_path_var.get().strip()] if self.literature_path_var.get().strip() else []
+        model_name = self.model_name_var.get().strip() or "gpt-4o"
+        common_kwargs = {
+            "rna_h5ad_path": self.rna_h5ad_var.get().strip(),
+            "research_brief_path": self.research_brief_var.get().strip(),
+            "literature_paths": literature_paths or None,
+            "analysis_name": analysis_name,
+            "model_name": model_name,
+            "hypothesis_model": model_name,
+            "execution_model": model_name,
+            "vision_model": model_name,
+            "num_analyses": 1,
+            "max_iterations": 6,
+            "output_home": output_home,
+            "generate_publication_figure": self.with_figure_var.get(),
+            "log_prompts": self.log_prompts_var.get(),
+        }
+        if self._mode_is_spatial():
+            return ScRSTAgent(
+                spatial_h5ad_path=self.modality_input_var.get().strip(),
+                spatial_mapping_method=self.spatial_mapping_method_var.get().strip() or "auto",
+                **common_kwargs,
+            )
+        if self._mode_is_atac():
+            return ScRATAgent(
+                atac_h5ad_path=self.modality_input_var.get().strip(),
+                **common_kwargs,
+            )
         return ScRTAgent(
-            rna_h5ad_path=self.rna_h5ad_var.get().strip(),
-            tcr_path=self.tcr_path_var.get().strip(),
-            research_brief_path=self.research_brief_var.get().strip(),
-            literature_paths=literature_paths or None,
-            analysis_name=analysis_name,
-            model_name=self.model_name_var.get().strip() or "gpt-4o",
-            hypothesis_model=self.model_name_var.get().strip() or "gpt-4o",
-            execution_model=self.model_name_var.get().strip() or "gpt-4o",
-            vision_model=self.model_name_var.get().strip() or "gpt-4o",
-            num_analyses=1,
-            max_iterations=6,
-            output_home=output_home,
-            generate_publication_figure=self.with_figure_var.get(),
-            log_prompts=self.log_prompts_var.get(),
+            tcr_path=self.modality_input_var.get().strip(),
+            **common_kwargs,
         )
 
     def _session_dir(self) -> Path:
@@ -295,29 +420,115 @@ class ScRTDesktopApp(tk.Tk):
         base.mkdir(parents=True, exist_ok=True)
         return base / name
 
+    def _write_session_config(self, session_dir: Path, feedback_text: str = "") -> None:
+        config = {
+            "analysis_mode": self._analysis_mode(),
+            "rna_h5ad_path": self.rna_h5ad_var.get().strip(),
+            "modality_input_path": self.modality_input_var.get().strip(),
+            "research_brief_path": self.research_brief_var.get().strip(),
+            "literature_path": [self.literature_path_var.get().strip()] if self.literature_path_var.get().strip() else [],
+            "model_name": self.model_name_var.get().strip() or "gpt-4o",
+            "with_figure": self.with_figure_var.get(),
+            "log_prompts": self.log_prompts_var.get(),
+            "candidate_generation_feedback": feedback_text,
+            "spatial_mapping_method": self.spatial_mapping_method_var.get().strip() or "auto",
+        }
+        if self._mode_is_spatial():
+            config["spatial_h5ad_path"] = self.modality_input_var.get().strip()
+        elif self._mode_is_atac():
+            config["atac_h5ad_path"] = self.modality_input_var.get().strip()
+        else:
+            config["tcr_path"] = self.modality_input_var.get().strip()
+        write_json(session_dir / "session_config.json", config)
+
+    def _load_session_config(self, session_dir: Path) -> None:
+        config_path = session_dir / "session_config.json"
+        if not config_path.exists():
+            return
+        config = read_json(config_path)
+        self.analysis_mode_var.set(config.get("analysis_mode", "scRNA-TCR"))
+        self._update_mode_ui()
+        self.rna_h5ad_var.set(config.get("rna_h5ad_path", ""))
+        modality_path = (
+            config.get("modality_input_path")
+            or config.get("tcr_path")
+            or config.get("spatial_h5ad_path")
+            or config.get("atac_h5ad_path")
+            or ""
+        )
+        self.modality_input_var.set(modality_path)
+        self.research_brief_var.set(config.get("research_brief_path", ""))
+        literature_paths = config.get("literature_path", [])
+        self.literature_path_var.set(literature_paths[0] if literature_paths else "")
+        self.model_name_var.set(config.get("model_name", "gpt-4o"))
+        self.spatial_mapping_method_var.set(config.get("spatial_mapping_method", "auto"))
+        self.with_figure_var.set(bool(config.get("with_figure", True)))
+        self.log_prompts_var.set(bool(config.get("log_prompts", False)))
+        feedback = config.get("candidate_generation_feedback", "")
+        if feedback:
+            self.feedback_text.delete("1.0", "end")
+            self.feedback_text.insert("1.0", feedback)
+
     def prepare_raw_data(self) -> None:
         raw_input = self.raw_input_var.get().strip()
         output_dir = self.prep_output_var.get().strip()
         if not raw_input or not output_dir:
-            messagebox.showwarning("Missing input", "Please provide raw input and output directory.")
+            messagebox.showwarning("Missing input", "Please provide the required raw input path and output directory.")
+            return
+        if self._mode_is_spatial() and not self.secondary_raw_input_var.get().strip():
+            messagebox.showwarning("Missing input", "Please provide the spatial raw input path.")
             return
 
         def task():
-            result = prepare_dataset(
-                raw_input_path=raw_input,
-                output_dir=output_dir,
-                annotation_model=self.annotation_model_var.get().strip() or "gpt-4o",
-                annotation_notes_path=self.annotation_notes_var.get().strip() or None,
-                min_genes=int(self.min_genes_var.get().strip() or "200"),
-                min_cells=int(self.min_cells_var.get().strip() or "3"),
-                max_pct_mt=float(self.max_pct_mt_var.get().strip() or "15"),
-                leiden_resolution=float(self.leiden_resolution_var.get().strip() or "0.8"),
-                log_prompts=self.log_prompts_var.get(),
-            )
-            self.rna_h5ad_var.set(str(result.rna_h5ad_path))
-            self.tcr_path_var.set(str(result.tcr_table_path))
-            self._queue_log(f"Prepared RNA: {result.rna_h5ad_path}\n")
-            self._queue_log(f"Prepared TCR: {result.tcr_table_path}\n")
+            if self._mode_is_spatial():
+                result = prepare_spatial_dataset(
+                    rna_raw_input_path=raw_input,
+                    spatial_raw_input_path=self.secondary_raw_input_var.get().strip(),
+                    output_dir=output_dir,
+                    annotation_model=self.annotation_model_var.get().strip() or "gpt-4o",
+                    annotation_notes_path=self.annotation_notes_var.get().strip() or None,
+                    min_genes=int(self.min_genes_var.get().strip() or "200"),
+                    min_cells=int(self.min_cells_var.get().strip() or "3"),
+                    max_pct_mt=float(self.max_pct_mt_var.get().strip() or "15"),
+                    leiden_resolution=float(self.leiden_resolution_var.get().strip() or "0.8"),
+                    log_prompts=self.log_prompts_var.get(),
+                )
+                self.rna_h5ad_var.set(str(result.rna_h5ad_path))
+                self.modality_input_var.set(str(result.spatial_h5ad_path))
+                self._queue_log(f"Prepared RNA: {result.rna_h5ad_path}\n")
+                self._queue_log(f"Prepared spatial: {result.spatial_h5ad_path}\n")
+            elif self._mode_is_atac():
+                result = prepare_atac_dataset(
+                    raw_input_path=raw_input,
+                    output_dir=output_dir,
+                    annotation_model=self.annotation_model_var.get().strip() or "gpt-4o",
+                    annotation_notes_path=self.annotation_notes_var.get().strip() or None,
+                    min_genes=int(self.min_genes_var.get().strip() or "200"),
+                    min_cells=int(self.min_cells_var.get().strip() or "3"),
+                    max_pct_mt=float(self.max_pct_mt_var.get().strip() or "15"),
+                    leiden_resolution=float(self.leiden_resolution_var.get().strip() or "0.8"),
+                    log_prompts=self.log_prompts_var.get(),
+                )
+                self.rna_h5ad_var.set(str(result.rna_h5ad_path))
+                self.modality_input_var.set(str(result.atac_h5ad_path))
+                self._queue_log(f"Prepared RNA: {result.rna_h5ad_path}\n")
+                self._queue_log(f"Prepared ATAC: {result.atac_h5ad_path}\n")
+            else:
+                result = prepare_tcr_dataset(
+                    raw_input_path=raw_input,
+                    output_dir=output_dir,
+                    annotation_model=self.annotation_model_var.get().strip() or "gpt-4o",
+                    annotation_notes_path=self.annotation_notes_var.get().strip() or None,
+                    min_genes=int(self.min_genes_var.get().strip() or "200"),
+                    min_cells=int(self.min_cells_var.get().strip() or "3"),
+                    max_pct_mt=float(self.max_pct_mt_var.get().strip() or "15"),
+                    leiden_resolution=float(self.leiden_resolution_var.get().strip() or "0.8"),
+                    log_prompts=self.log_prompts_var.get(),
+                )
+                self.rna_h5ad_var.set(str(result.rna_h5ad_path))
+                self.modality_input_var.set(str(result.tcr_table_path))
+                self._queue_log(f"Prepared RNA: {result.rna_h5ad_path}\n")
+                self._queue_log(f"Prepared TCR: {result.tcr_table_path}\n")
 
         self._run_background("Prepare raw data", task)
 
@@ -333,17 +544,7 @@ class ScRTDesktopApp(tk.Tk):
             (session_dir / "candidate_hypotheses.md").write_text(format_candidate_menu_markdown(menu), encoding="utf-8")
             if feedback_text:
                 (session_dir / "candidate_generation_feedback.txt").write_text(feedback_text + "\n", encoding="utf-8")
-            config = {
-                "rna_h5ad_path": self.rna_h5ad_var.get().strip(),
-                "tcr_path": self.tcr_path_var.get().strip(),
-                "research_brief_path": self.research_brief_var.get().strip(),
-                "literature_path": [self.literature_path_var.get().strip()] if self.literature_path_var.get().strip() else [],
-                "model_name": self.model_name_var.get().strip() or "gpt-4o",
-                "with_figure": self.with_figure_var.get(),
-                "log_prompts": self.log_prompts_var.get(),
-                "candidate_generation_feedback": feedback_text,
-            }
-            write_json(session_dir / "session_config.json", config)
+            self._write_session_config(session_dir, feedback_text=feedback_text)
             self.current_session_dir = session_dir
             self.current_candidates = [item.model_dump() for item in menu.candidates]
             self.message_queue.put(("done", lambda: self._show_candidates(menu.model_dump())))
@@ -387,14 +588,9 @@ class ScRTDesktopApp(tk.Tk):
         self.candidate_detail.delete("1.0", "end")
         self.candidate_detail.insert("1.0", "\n".join(lines))
 
-    def _show_approved_plan(self, payload: dict) -> None:
-        lines = self._plan_lines(payload)
-        self.candidate_detail.delete("1.0", "end")
-        self.candidate_detail.insert("1.0", "\n".join(lines))
-
-    def _plan_lines(self, payload: dict) -> list[str]:
+    def _plan_lines(self, payload: dict, heading: str = "Draft analysis plan") -> list[str]:
         lines = [
-            "Approved analysis plan",
+            heading,
             "",
             f"Hypothesis: {payload.get('hypothesis', '')}",
             f"Analysis type: {payload.get('analysis_type', '')}",
@@ -421,6 +617,10 @@ class ScRTDesktopApp(tk.Tk):
         )
         return lines
 
+    def _show_plan(self, payload: dict, heading: str) -> None:
+        self.candidate_detail.delete("1.0", "end")
+        self.candidate_detail.insert("1.0", "\n".join(self._plan_lines(payload, heading=heading)))
+
     def load_session(self) -> None:
         session_dir_text = filedialog.askdirectory(initialdir=self.output_home_var.get().strip() or str(self.project_root / "sessions"))
         if not session_dir_text:
@@ -430,17 +630,21 @@ class ScRTDesktopApp(tk.Tk):
         if not candidate_path.exists():
             messagebox.showwarning("Missing file", "candidate_hypotheses.json was not found in that folder.")
             return
-        payload = read_json(candidate_path)
         self.current_session_dir = session_dir
         self.session_name_var.set(session_dir.name)
         self.output_home_var.set(str(session_dir.parent))
+        self._load_session_config(session_dir)
+        payload = read_json(candidate_path)
         self._show_candidates(payload)
+        draft_plan_path = session_dir / "draft_plan.json"
         approved_plan_path = session_dir / "approved_plan.json"
-        if approved_plan_path.exists():
-            self._show_approved_plan(read_json(approved_plan_path))
+        if draft_plan_path.exists():
+            self._show_plan(read_json(draft_plan_path), "Draft analysis plan")
+        elif approved_plan_path.exists():
+            self._show_plan(read_json(approved_plan_path), "Approved analysis plan")
         self._append_log(f"Loaded session: {session_dir}\n")
 
-    def approve_selected_hypothesis(self) -> None:
+    def regenerate_analysis_plan(self) -> None:
         if not self.current_candidates:
             messagebox.showwarning("No candidates", "Generate or load a session first.")
             return
@@ -459,16 +663,47 @@ class ScRTDesktopApp(tk.Tk):
                 hypothesis = agent.revise_hypothesis(hypothesis=hypothesis, user_feedback=feedback_text)
                 (self.current_session_dir / "user_feedback.txt").write_text(feedback_text + "\n", encoding="utf-8")
             plan = agent.build_plan_from_hypothesis(hypothesis, user_strategy_feedback=feedback_text)
-            (self.current_session_dir / "approved_hypothesis.txt").write_text(hypothesis + "\n", encoding="utf-8")
-            write_json(self.current_session_dir / "approved_plan.json", plan.model_dump())
-            (self.current_session_dir / "approved_plan.md").write_text("\n".join(self._plan_lines(plan.model_dump())) + "\n", encoding="utf-8")
+            (self.current_session_dir / "draft_hypothesis.txt").write_text(hypothesis + "\n", encoding="utf-8")
+            write_json(self.current_session_dir / "draft_plan.json", plan.model_dump())
+            (self.current_session_dir / "draft_plan.md").write_text(
+                "\n".join(self._plan_lines(plan.model_dump(), heading="Draft analysis plan")) + "\n",
+                encoding="utf-8",
+            )
             if feedback_text:
-                (self.current_session_dir / "approved_strategy_feedback.txt").write_text(feedback_text + "\n", encoding="utf-8")
-            self.message_queue.put(("done", lambda payload=plan.model_dump(): self._show_approved_plan(payload)))
-            self._queue_log(f"Approved hypothesis saved in {self.current_session_dir}\n")
-            self._queue_log("Approved plan regenerated. Review the plan on the right before you run the analysis.\n")
+                (self.current_session_dir / "draft_strategy_feedback.txt").write_text(feedback_text + "\n", encoding="utf-8")
+            self._write_session_config(self.current_session_dir, feedback_text=feedback_text)
+            self.message_queue.put(("done", lambda payload=plan.model_dump(): self._show_plan(payload, "Draft analysis plan")))
+            self._queue_log(f"Draft analysis plan saved in {self.current_session_dir}\n")
+            self._queue_log("Review the draft plan on the right. If it looks good, click Approve Selected Hypothesis.\n")
 
-        self._run_background("Approve hypothesis", task)
+        self._run_background("Regenerate analysis plan", task)
+
+    def approve_selected_hypothesis(self) -> None:
+        if self.current_session_dir is None:
+            self.current_session_dir = self._session_dir()
+        draft_hypothesis_path = self.current_session_dir / "draft_hypothesis.txt"
+        draft_plan_path = self.current_session_dir / "draft_plan.json"
+        if not draft_hypothesis_path.exists() or not draft_plan_path.exists():
+            messagebox.showwarning("No draft plan", "Generate a draft analysis plan first.")
+            return
+
+        approved_hypothesis_path = self.current_session_dir / "approved_hypothesis.txt"
+        approved_plan_path = self.current_session_dir / "approved_plan.json"
+        approved_plan_md_path = self.current_session_dir / "approved_plan.md"
+        approved_feedback_path = self.current_session_dir / "approved_strategy_feedback.txt"
+
+        approved_hypothesis_path.write_text(draft_hypothesis_path.read_text(encoding="utf-8"), encoding="utf-8")
+        approved_payload = read_json(draft_plan_path)
+        write_json(approved_plan_path, approved_payload)
+        approved_plan_md_path.write_text(
+            "\n".join(self._plan_lines(approved_payload, heading="Approved analysis plan")) + "\n",
+            encoding="utf-8",
+        )
+        draft_feedback_path = self.current_session_dir / "draft_strategy_feedback.txt"
+        if draft_feedback_path.exists():
+            approved_feedback_path.write_text(draft_feedback_path.read_text(encoding="utf-8"), encoding="utf-8")
+        self._show_plan(approved_payload, "Approved analysis plan")
+        self._append_log(f"Approved hypothesis saved in {self.current_session_dir}\n")
 
     def run_analysis(self) -> None:
         if self.current_session_dir is None:
@@ -488,9 +723,6 @@ class ScRTDesktopApp(tk.Tk):
                 hypothesis = approved_path.read_text(encoding="utf-8").strip()
                 summary_path = agent.run(seeded_hypotheses=[hypothesis])
             self._queue_log(f"Run summary: {summary_path}\n")
-            executed_path = self.current_session_dir / "executed_hypotheses.txt"
-            if executed_path.exists():
-                self._queue_log(f"Executed hypotheses: {executed_path}\n")
             figure_status_path = self.current_session_dir / "figure_status.txt"
             if figure_status_path.exists():
                 figure_status = figure_status_path.read_text(encoding="utf-8").strip()
@@ -508,17 +740,30 @@ class ScRTDesktopApp(tk.Tk):
             messagebox.showerror("Open folder failed", str(exc))
 
     def _browse_raw_input_folder(self) -> None:
-        directory = filedialog.askdirectory(title="Select extracted raw data directory")
+        title = "Select scRNA raw directory" if self._mode_is_spatial() else "Select extracted raw data directory"
+        if self._mode_is_atac():
+            title = "Select 10x multiome raw directory"
+        directory = filedialog.askdirectory(title=title)
         if directory:
             self.raw_input_var.set(directory)
 
     def _browse_raw_input_tar(self) -> None:
-        path = filedialog.askopenfilename(
-            title="Select GEO RAW.tar archive",
-            filetypes=[("TAR archives", "*.tar"), ("All files", "*.*")],
-        )
+        title = "Select scRNA RAW.tar archive" if self._mode_is_spatial() else "Select GEO RAW.tar archive"
+        if self._mode_is_atac():
+            title = "Select 10x multiome RAW.tar archive"
+        path = filedialog.askopenfilename(title=title, filetypes=[("TAR archives", "*.tar"), ("All files", "*.*")])
         if path:
             self.raw_input_var.set(path)
+
+    def _browse_secondary_raw_input_folder(self) -> None:
+        directory = filedialog.askdirectory(title="Select spatial raw directory")
+        if directory:
+            self.secondary_raw_input_var.set(directory)
+
+    def _browse_secondary_raw_input_tar(self) -> None:
+        path = filedialog.askopenfilename(title="Select spatial RAW.tar archive", filetypes=[("TAR archives", "*.tar"), ("All files", "*.*")])
+        if path:
+            self.secondary_raw_input_var.set(path)
 
     def _browse_prep_output_dir(self) -> None:
         directory = filedialog.askdirectory(title="Select preparation output directory")
@@ -535,10 +780,15 @@ class ScRTDesktopApp(tk.Tk):
         if path:
             self.rna_h5ad_var.set(path)
 
-    def _browse_tcr_path(self) -> None:
-        path = filedialog.askopenfilename(title="Select TCR table", filetypes=[("Tables", "*.tsv *.csv *.txt *.gz"), ("All files", "*.*")])
+    def _browse_modality_input(self) -> None:
+        if self._mode_is_spatial():
+            path = filedialog.askopenfilename(title="Select spatial h5ad", filetypes=[("AnnData", "*.h5ad"), ("All files", "*.*")])
+        elif self._mode_is_atac():
+            path = filedialog.askopenfilename(title="Select ATAC h5ad", filetypes=[("AnnData", "*.h5ad"), ("All files", "*.*")])
+        else:
+            path = filedialog.askopenfilename(title="Select TCR table", filetypes=[("Tables", "*.tsv *.csv *.txt *.gz"), ("All files", "*.*")])
         if path:
-            self.tcr_path_var.set(path)
+            self.modality_input_var.set(path)
 
     def _browse_brief(self) -> None:
         path = filedialog.askopenfilename(title="Select research brief", filetypes=[("Text files", "*.txt *.md"), ("All files", "*.*")])
@@ -559,3 +809,4 @@ class ScRTDesktopApp(tk.Tk):
 def run_desktop_app(project_root: str | Path) -> None:
     app = ScRTDesktopApp(project_root)
     app.mainloop()
+

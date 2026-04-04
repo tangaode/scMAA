@@ -1,0 +1,45 @@
+Critique the current scRNA + scATAC analysis plan before execution.
+
+Focus on:
+- whether the claim matches the available RNA and ATAC data
+- whether the code relies on missing columns, layers, or unsupported packages
+- whether paired-cell assumptions are valid
+- whether accessibility is being over-interpreted as expression
+- whether the next step is too broad, redundant, or weak
+
+Hypothesis:
+{hypothesis}
+
+Analysis type:
+{analysis_type}
+
+Priority question:
+{priority_question}
+
+Evidence goal:
+{evidence_goal}
+
+Validation checks:
+{validation_checks}
+
+Remaining steps:
+{analysis_plan}
+
+Current first-step code:
+```python
+{first_step_code}
+```
+
+Notebook summary so far:
+{notebook_summary}
+
+Documentation:
+{documentation}
+
+Research state:
+{research_state}
+
+Past analyses:
+{past_analyses}
+
+Return short concrete critique bullets only.

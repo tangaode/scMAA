@@ -1,4 +1,4 @@
-"""Notebook execution backend for scRT-agent v2."""
+﻿"""Notebook execution backend for scMAA."""
 
 from __future__ import annotations
 
@@ -112,7 +112,7 @@ class LegacyNotebookExecutor:
 
     def create_initial_notebook(self, analysis, research_ledger: ResearchLedger) -> nbf.NotebookNode:
         notebook = nbf.v4.new_notebook()
-        notebook.cells.append(new_markdown_cell("# scRT-agent v2 Analysis"))
+        notebook.cells.append(new_markdown_cell("# scMAA Analysis"))
         notebook.cells.append(new_markdown_cell(f"## Hypothesis\n\n{analysis.hypothesis}"))
         notebook.cells.append(
             new_markdown_cell(
@@ -760,3 +760,4 @@ print("Notebook helper functions available: paired_tcr_subset, infer_tumor_like_
             f"Research ledger:\n{truncate_text(research_ledger.to_prompt_text(), 1200)}"
         )
         return (past_analyses + "\n\n" + summary_text).strip(), research_ledger
+

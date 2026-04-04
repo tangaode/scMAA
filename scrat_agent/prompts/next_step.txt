@@ -1,0 +1,49 @@
+Plan the next notebook step for a scRNA + scATAC analysis after seeing the latest outputs.
+
+Return a structured `AnalysisPlan`.
+
+Requirements:
+- Use the latest notebook outputs and research state.
+- Do not repeat the same plot or table unless it is required for validation.
+- Prefer steps that distinguish competing explanations.
+- Keep the next code cell executable and limited in scope.
+- If RNA and ATAC disagree, make that discrepancy explicit instead of smoothing it over.
+
+Coding guidelines:
+{CODING_GUIDELINES}
+
+Notebook steps left:
+{num_steps_left}
+
+Current hypothesis:
+{hypothesis}
+
+RNA summary:
+{rna_summary}
+
+ATAC summary:
+{tcr_summary}
+
+Joint summary:
+{joint_summary}
+
+Validation summary:
+{validation_summary}
+
+Past analyses:
+{past_analyses}
+
+Research state:
+{research_state}
+
+Notebook summary:
+{notebook_summary}
+
+Current code:
+{current_code}
+
+Current code description:
+{current_code_description}
+
+Step validation summary:
+{step_validation_summary}

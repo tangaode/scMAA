@@ -1,0 +1,94 @@
+Continue the current notebook analysis and choose the next executable step.
+
+Return a structured `AnalysisPlan` with:
+- `hypothesis`
+- `analysis_type`
+- `priority_question`
+- `evidence_goal`
+- `decision_rationale`
+- `validation_checks`
+- `analysis_plan`
+- `first_step_code`
+- `code_description`
+- `summary`
+
+How to think:
+- Use the notebook summary and research state as the source of truth for what already happened.
+- Update the remaining plan from this point onward; do not restart the whole analysis.
+- The next step must react to the observed evidence and the latest caveats.
+- Prefer the step with the highest information gain among the realistic options.
+- If the previous step was inconclusive, choose a step that resolves the ambiguity.
+- Avoid placeholder cleaning or metadata-imputation steps unless the step validation summary shows a concrete need.
+- Prefer notebook helper functions instead of writing fresh DE/category-handling code from scratch.
+- There are only {num_steps_left} steps left after this one, so keep the scope realistic.
+
+Current hypothesis:
+{hypothesis}
+
+Current analysis type:
+{analysis_type}
+
+Current priority question:
+{priority_question}
+
+Current evidence goal:
+{evidence_goal}
+
+Current decision rationale:
+{decision_rationale}
+
+Current validation checks:
+{validation_checks}
+
+Current remaining plan:
+{analysis_plan}
+
+Current code description:
+{current_code_description}
+
+Current code:
+```python
+{current_code}
+```
+
+Current summary:
+{summary}
+
+Coding guidelines:
+{CODING_GUIDELINES}
+
+RNA summary:
+{rna_summary}
+
+Spatial summary:
+{tcr_summary}
+
+Joint summary:
+{joint_summary}
+
+Validation summary:
+{validation_summary}
+
+Research state:
+{research_state}
+
+Literature summary:
+{literature_summary}
+
+Literature-derived hypothesis candidates:
+{literature_candidates_summary}
+
+Selected literature seed:
+{selected_literature_seed}
+
+Step validation summary:
+{step_validation_summary}
+
+Research brief:
+{context_summary}
+
+Past analyses:
+{past_analyses}
+
+Notebook summary:
+{notebook_summary}

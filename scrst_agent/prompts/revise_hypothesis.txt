@@ -1,0 +1,53 @@
+Revise the working hypothesis after user feedback.
+
+Return a structured `HypothesisRevision` with:
+- `revised_hypothesis`
+- `revision_rationale`
+- `preferred_analysis_type`
+- `retained_constraints`
+
+Rules:
+- Treat the user feedback as the highest-priority steering signal.
+- The user feedback may be written in Chinese, English, or mixed language. Read it faithfully.
+- Default to a minimal revision, not a full rewrite.
+- Preserve the original scientific question when possible, and only narrow, filter, or re-scope it unless the user clearly asks for a different question.
+- If the user uses restrictive words such as "only", "just", "focus on", "仅", "只", "仅仅", "聚焦", "限制", or "不要", treat that as a scope restriction rather than a request to invent a new hypothesis.
+- Keep the original target variables, biological theme, and comparison axis unless the feedback explicitly replaces them.
+- If the feedback is ambiguous, prefer the more conservative interpretation that changes less.
+- Make the revised hypothesis testable with the available dataset.
+- Keep important guardrails from the validation summary.
+- Do not turn the revision into a full notebook plan yet. Only return the revised hypothesis package.
+- In `revision_rationale`, explicitly say which part of the original hypothesis was kept and which part was changed.
+
+Current hypothesis:
+{hypothesis}
+
+User feedback:
+{user_feedback}
+
+RNA summary:
+{rna_summary}
+
+Spatial summary:
+{tcr_summary}
+
+Joint summary:
+{joint_summary}
+
+Validation summary:
+{validation_summary}
+
+Research state:
+{research_state}
+
+Literature summary:
+{literature_summary}
+
+Literature-derived hypothesis candidates:
+{literature_candidates_summary}
+
+Research brief:
+{context_summary}
+
+Past analyses:
+{past_analyses}

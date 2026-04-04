@@ -1,4 +1,4 @@
-"""Main orchestration for scRT-agent."""
+﻿"""Main orchestration for scMAA."""
 
 from __future__ import annotations
 
@@ -430,7 +430,7 @@ class ScRTAgent:
         research_ledger = self._make_research_ledger()
 
         self.logger.info(
-            f"Starting scRT-agent run from approved plan. "
+            f"Starting scMAA run from approved plan. "
             f"RNA={self.rna_h5ad_path}, TCR={self.tcr_path}, research_brief={self.research_brief_path}"
         )
 
@@ -811,7 +811,7 @@ class ScRTAgent:
         figure_error: str | None = None
 
         self.logger.info(
-            f"Starting scRT-agent run with {total_analyses} analyses. "
+            f"Starting scMAA run with {total_analyses} analyses. "
             f"RNA={self.rna_h5ad_path}, TCR={self.tcr_path}, research_brief={self.research_brief_path}"
         )
 
@@ -851,3 +851,4 @@ class ScRTAgent:
             figure_result=figure_result,
             figure_error=figure_error,
         )
+

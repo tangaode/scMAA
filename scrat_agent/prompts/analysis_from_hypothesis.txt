@@ -1,0 +1,68 @@
+Turn the seeded hypothesis below into one executable scRNA + scATAC notebook analysis.
+
+Seeded hypothesis:
+{hypothesis}
+
+Return a structured `AnalysisPlan` with:
+- `hypothesis`
+- `analysis_type`
+- `priority_question`
+- `evidence_goal`
+- `decision_rationale`
+- `validation_checks`
+- `analysis_plan`
+- `first_step_code`
+- `code_description`
+- `summary`
+
+Requirements:
+- Preserve the spirit of the seeded hypothesis, but refine it into something executable and falsifiable.
+- Use the validation summary and research state to avoid fragile or redundant plans.
+- Do not repeat past analyses.
+- Choose a first step that produces real evidence, not generic housekeeping.
+- Prefer notebook helper functions over ad hoc category wrangling or repeated DE boilerplate.
+- Treat user strategy feedback as a high-priority planning constraint.
+- If the user asks to compare certain tissues, cell states, markers, or regulatory programs first, make that visible in the first step and in the analysis plan.
+- If the user narrows the scope, do not silently broaden it again.
+- When possible, connect RNA expression states to ATAC accessibility or gene-activity signals.
+- If shared observation names are abundant and ATAC gene activity is available, prefer `analysis_type = joint`.
+- Under strong paired-data support, do not downgrade to `rna_only` unless the user explicitly asked for it or the seeded hypothesis is truly RNA-specific.
+- The first step should collect both RNA and ATAC evidence whenever the hypothesis is about state differences, marker concordance, or regulatory support.
+- Prefer helper patterns such as `paired_modality_subset`, `expression_frame`, `atac_signal_frame`, and `summarize_rna_atac_link` when they fit the question.
+- If the plan starts with a restricted tissue or cell-state comparison, keep that restriction in both the RNA and ATAC parts of the first step.
+
+Coding guidelines:
+{CODING_GUIDELINES}
+
+RNA summary:
+{rna_summary}
+
+ATAC summary:
+{tcr_summary}
+
+Joint summary:
+{joint_summary}
+
+Validation summary:
+{validation_summary}
+
+Research state:
+{research_state}
+
+Literature summary:
+{literature_summary}
+
+Literature-derived hypothesis candidates:
+{literature_candidates_summary}
+
+Selected literature seed:
+{selected_literature_seed}
+
+User strategy feedback:
+{user_strategy_feedback}
+
+Research brief:
+{context_summary}
+
+Past analyses:
+{past_analyses}

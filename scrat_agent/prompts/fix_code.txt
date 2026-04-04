@@ -1,0 +1,28 @@
+Fix the failing notebook code below.
+
+Return only corrected executable Python. Do not include markdown fences, explanations, or JSON.
+
+Requirements:
+- Respect the current notebook state.
+- Prefer minimal targeted fixes.
+- Do not reload the input files.
+- If a column may be missing, guard against it instead of crashing.
+- Use only the available packages and objects already in memory.
+- Preserve paired RNA-ATAC logic if the code touches shared-cell or gene-activity fields.
+
+Current code:
+```python
+{current_code}
+```
+
+Error:
+{error_message}
+
+Notebook summary:
+{notebook_summary}
+
+Relevant documentation:
+{documentation}
+
+Available packages and runtime notes:
+{available_packages}

@@ -1,0 +1,64 @@
+Interpret the most recent notebook step from an integrated scRNA + spatial transcriptomics analysis.
+
+Write a concise scientific interpretation that does three things:
+1. states what the step actually showed
+2. says whether it supports, weakens, reframes, or leaves the hypothesis inconclusive
+3. recommends the most useful next analysis direction
+
+Be evidence-driven. Do not invent results that are not visible in the outputs. If the step was mainly diagnostic or setup-oriented, say so plainly.
+
+Hypothesis:
+{hypothesis}
+
+Analysis type:
+{analysis_type}
+
+Priority question:
+{priority_question}
+
+Evidence goal:
+{evidence_goal}
+
+Decision rationale:
+{decision_rationale}
+
+Validation checks:
+{validation_checks}
+
+Remaining plan:
+{analysis_plan}
+
+Code description:
+{code_description}
+
+Executed code:
+```python
+{code}
+```
+
+Text output:
+{text_output}
+
+RNA summary:
+{rna_summary}
+
+Spatial summary:
+{tcr_summary}
+
+Joint summary:
+{joint_summary}
+
+Validation summary:
+{validation_summary}
+
+Research state:
+{research_state}
+
+Step validation summary:
+{step_validation_summary}
+
+Research brief:
+{context_summary}
+
+Past analyses:
+{past_analyses}

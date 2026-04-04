@@ -1,0 +1,35 @@
+Available Python packages: {AVAILABLE_PACKAGES}
+
+Notebook state and data contract:
+- `adata_rna` is the primary object for transcriptomic analysis.
+- `adata_spatial` is the primary object for spatial transcriptomics analysis.
+- The setup cell loads both RNA and spatial objects.
+- The following helpers should usually be available: `infer_tumor_like_tissues`, `tumor_like_subset`, `resolve_gene_names`, `expression_frame`, `spatial_coordinate_frame`, `safe_rank_genes_groups`, `transfer_reference_markers_to_spatial`, `run_cell2location_mapping`, `run_reference_mapping`, and `spatial_domain_de`.
+- Some fields may contain missing values. Check before analysis.
+
+Research rules:
+- Favor analyses that connect scRNA-defined cell states with spatial domains, tissue, or sample.
+- Every step should produce evidence, not just activity.
+- Prefer steps with high information gain: diagnostics, direct contrasts, enrichment tables, or figures that can differentiate two explanations.
+- If the data only support a descriptive conclusion, say so and avoid causal language.
+- If a proposed control is not actually modeled in code, do not say it was controlled.
+- Avoid placeholder metadata cleaning steps unless missingness is directly demonstrated.
+
+Spatial-specific guardrails:
+- Do not treat spatial spots as single pure cells unless external evidence supports that claim.
+- Prefer tissue-aware or sample-aware summaries over pooled global claims.
+- Treat spatial correlation as provisional until obvious confounding by tissue structure has been considered.
+- Do not assume tumor samples are labeled literally as `tumor`; inspect the observed tissue levels or use `tumor_like_subset`.
+- For marker-driven questions, prefer canonical gene symbols and use `resolve_gene_names` or `expression_frame`.
+- Prefer `run_reference_mapping` for RNA-to-spatial mapping. It will use `cell2location` when requested and available, otherwise it falls back to marker transfer.
+- Prefer `spatial_domain_de` over hand-written differential-expression boilerplate when it fits the question.
+
+Execution rules:
+- Do not assume squidpy, Tangram, Seurat, or internet access.
+- If the notebook setup reports that `SPATIAL_MAPPING_METHOD` is `cell2location`, prefer `run_reference_mapping(..., method='cell2location')` or `run_cell2location_mapping(...)` over ad hoc marker scoring.
+- Do not write to arbitrary external locations.
+- Use `scanpy` plotting or standard pandas/seaborn/matplotlib plots when appropriate.
+- Avoid overly large differential testing loops. Keep each notebook step focused and cheap enough to run on a laptop.
+- If a column is missing, branch gracefully instead of failing.
+- Print concise textual summaries so replanning can use them.
+- Before using `.cat`, make sure the column has been cast to category or use the provided helper functions instead.

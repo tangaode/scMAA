@@ -1,4 +1,4 @@
-"""Interactive session helpers for scRT-agent v2."""
+﻿"""Interactive session helpers for scMAA."""
 
 from __future__ import annotations
 
@@ -92,3 +92,4 @@ def format_analysis_plan_markdown(plan: AnalysisPlan) -> str:
         ]
     )
     return "\n".join(lines).strip() + "\n"
+

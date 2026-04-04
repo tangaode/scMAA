@@ -1,28 +1,40 @@
-# scRT-agent v2
+# scMAA
 
-`scRT-agent v2` is a tool for `scRNA + scTCR` analysis.
+`scMAA` stands for `scMultiomic-Analysis-Agent`.
 
-It can start from raw GEO-style files or from a prepared RNA object and TCR table.
+This project supports three workflows in one desktop app:
 
-If you start from raw data, it first builds a processed `.h5ad`, merges the TCR tables, runs basic QC, UMAP, clustering, cluster markers, and cluster labels. Then the main agent can use those prepared files.
+- `scRNA + scTCR`
+- `scRNA + spatial transcriptomics`
+- `scRNA + scATAC`
+
+The desktop app is the main entry point. Users can choose the workflow from a drop-down menu before preparing data or running the agent.
 
 ## Inputs
 
-For the main agent:
+For the main agent, provide:
 
 - one processed RNA file in `.h5ad` format
-- one scTCR table such as `.tsv`, `.csv`, or `.txt`
-- one text file that explains what you want to study
+- one second modality file
+- one text file that explains the research question
+
+The second modality depends on the selected workflow:
+
+- `scRNA + scTCR`: one TCR table such as `.tsv`, `.csv`, or `.txt`
+- `scRNA + spatial transcriptomics`: one processed spatial `.h5ad`
+- `scRNA + scATAC`: one processed ATAC `.h5ad`
 
 Optional:
 
 - local papers, reviews, or notes
 
-The main text input is the `research brief`. It does not need a fixed template. A few short paragraphs or bullet points are enough. It helps to mention the question, the samples or tissues, the main comparison, and any markers or pathways you care about.
+The main text input is the `research brief`. It does not need a strict template. A few short paragraphs or bullet points are enough.
 
 ## Raw Data Preparation
 
-If your data is still in raw files such as:
+### scRNA + scTCR
+
+If the raw files look like:
 
 - `*_barcodes.tsv.gz`
 - `*_features.tsv.gz`
@@ -30,7 +42,7 @@ If your data is still in raw files such as:
 - `*_filtered_contig_annotations.csv.gz`
 - or one `GSE*_RAW.tar`
 
-run this first:
+run:
 
 ```bash
 python run_scrt_prepare_data.py \
@@ -38,28 +50,34 @@ python run_scrt_prepare_data.py \
   --output-dir PREPARED_OUTPUT_DIR
 ```
 
-This step writes:
+### scRNA + spatial transcriptomics
 
-- `processed_rna.h5ad`
-- `merged_tcr_annotations.tsv.gz`
-- `cluster_markers.csv`
-- `cluster_annotations.csv`
-- `qc_summary.txt`
-- `figures/umap_leiden.png`
-- `figures/umap_cluster_cell_type.png`
+Run:
 
-The preparation step also:
+```bash
+python run_scrst_prepare_data.py \
+  --rna-raw-input-path PATH_TO_RNA_RAW_DIR_OR_TAR \
+  --spatial-raw-input-path PATH_TO_SPATIAL_RAW_DIR_OR_TAR \
+  --output-dir PREPARED_OUTPUT_DIR
+```
 
-- filters low-quality cells
-- computes PCA, neighbors, UMAP, and Leiden clusters
-- exports cluster marker genes
-- sends the top 50 non-lincRNA markers of each cluster to the model for cluster labeling
+### scRNA + scATAC
+
+For common `10x multiome / cellranger-arc` raw folders or `RAW.tar`, run:
+
+```bash
+python run_scrat_prepare_data.py \
+  --raw-input-path PATH_TO_RAW_DIR_OR_RAW_TAR \
+  --output-dir PREPARED_OUTPUT_DIR
+```
+
+This workflow will try the built-in parser first. If the raw format is more complex, the agent can fall back to model-generated preprocessing code and continue automatically.
 
 ## Install
 
 ```bash
 conda env create -f environment.yml
-conda activate scrt-agent-v2
+conda activate scmaa
 ```
 
 Set your API key:
@@ -68,22 +86,39 @@ Set your API key:
 OPENAI_API_KEY=...
 ```
 
+If you also use DeepSeek, place `OPENAI.env` and `deepseek.env` in the project root.
+
 ## Desktop App
 
-If you do not want to use the command line, you can start the desktop window by double-clicking:
+Double-click:
 
-- `launch_scRT_agent_gui.bat`
+- `launch_scMAA_gui.bat`
 
-The window lets you do these steps:
+or run:
 
-- prepare raw data into `processed_rna.h5ad`
-- generate candidate hypotheses
-- add feedback and approve one hypothesis
-- run the analysis and save the results
+```bash
+python run_scmaa_gui.pyw
+```
 
-If your machine already has a Python environment for this project, this is the easiest way to use the tool.
+The desktop app lets you:
 
-## Main Run
+- choose `scRNA-TCR`, `scRNA-ST`, or `scRNA-ATAC`
+- prepare raw data into processed input files
+- generate or regenerate candidate hypotheses
+- regenerate an analysis plan from user feedback
+- approve one hypothesis and one plan
+- run the analysis
+- save standard summary figures and hypothesis-driven figures
+
+## Command Line
+
+Mode-specific CLIs are still available for advanced use:
+
+- `run_scrt_agent.py`
+- `run_scrst_agent.py`
+- `run_scrat_agent.py`
+
+Example for `scRNA + scTCR`:
 
 ```bash
 python run_scrt_agent.py \
@@ -94,72 +129,42 @@ python run_scrt_agent.py \
   --with-figure
 ```
 
-If you want to add local papers or notes:
+Example for `scRNA + spatial transcriptomics`:
 
 ```bash
-python run_scrt_agent.py \
+python run_scrst_agent.py \
   --rna-h5ad-path PREPARED_OUTPUT_DIR/processed_rna.h5ad \
-  --tcr-path PREPARED_OUTPUT_DIR/merged_tcr_annotations.tsv.gz \
+  --spatial-h5ad-path PREPARED_OUTPUT_DIR/processed_spatial.h5ad \
   --research-brief-path PATH_TO_BRIEF_TXT \
-  --literature-path PATH_TO_PAPER_OR_FOLDER \
   --analysis-name MY_RUN \
   --with-figure
 ```
 
-## Interactive Use
-
-Use the interactive mode if you want to review the hypothesis before the notebook runs.
-
-Prepare candidates:
+Example for `scRNA + scATAC`:
 
 ```bash
-python run_scrt_interactive.py prepare \
-  --rna-h5ad-path PATH_TO_RNA_H5AD \
-  --tcr-path PATH_TO_TCR_TABLE \
+python run_scrat_agent.py \
+  --rna-h5ad-path PREPARED_OUTPUT_DIR/processed_rna.h5ad \
+  --atac-h5ad-path PREPARED_OUTPUT_DIR/processed_atac.h5ad \
   --research-brief-path PATH_TO_BRIEF_TXT \
-  --session-name MY_SESSION \
-  --output-home SESSIONS_DIR
-```
-
-Review and revise:
-
-```bash
-python run_scrt_interactive.py review \
-  --session-dir SESSIONS_DIR/MY_SESSION \
-  --candidate-index 2 \
-  --feedback-text "Focus more on metastasis and avoid pooled claims."
-```
-
-Run the approved plan:
-
-```bash
-python run_scrt_interactive.py run \
-  --session-dir SESSIONS_DIR/MY_SESSION \
+  --analysis-name MY_RUN \
   --with-figure
-```
-
-## Figure Only
-
-```bash
-python run_scrt_figure.py \
-  --rna-h5ad-path PATH_TO_RNA_H5AD \
-  --tcr-path PATH_TO_TCR_TABLE \
-  --output-dir FIGURE_OUTPUT_DIR
 ```
 
 ## Main Outputs
 
 - `run_summary.txt`
 - `*_analysis_1.ipynb`
-- `figure/*.png`
+- `figure/*_publication_figure.png`
+- `figure/*_publication_figure_hypothesis.png`
 - `figure/*.pdf`
 - `logs/`
 
-If you only want to check one file first, open `run_summary.txt`.
+If you only want to inspect one file first, open `run_summary.txt`.
 
 ## Notes
 
-- This project expects processed input files, not raw sequencing files.
+- `scMAA` is the product name. Internal package names are still kept as-is for compatibility.
 - The research brief is the main input. Local papers are optional.
 - Results still need user review before they are treated as biological conclusions.
-- The desktop app is the easiest way to start. A fully packed `.exe` can be added later if needed.
+- The desktop app is the easiest way to start.

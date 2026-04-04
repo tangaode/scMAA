@@ -1,0 +1,47 @@
+Propose a short ranked menu of candidate hypotheses for this scRNA + spatial transcriptomics project before any notebook execution begins.
+
+Return a structured `CandidateHypothesisMenu` with:
+- `research_focus`
+- `candidates`
+
+Requirements:
+- Return 3 to 5 candidate hypotheses.
+- If the user feedback asks for an exact number of hypotheses, follow that exact number as long as it stays between 1 and 8.
+- User feedback may be written in Chinese, English, or mixed language. Read it literally.
+- Favor hypotheses that are scientifically meaningful, dataset-feasible, and easy for a user to compare.
+- Do not assume the user wants literature-inspired questions unless the literature summary clearly helps.
+- If the research brief already points to a preferred direction, make that visible in the ranking.
+- Each `first_test` should describe a concrete first notebook step, not vague future work.
+- Keep caveats realistic and tied to the actual data.
+- If the user asks to broaden, narrow, add more options, or avoid a certain direction, apply that request to the whole candidate menu.
+- Favor hypotheses about spatial localization, tissue niches, marker gradients, spatial domains, or how scRNA-defined states appear in spatial data.
+
+RNA summary:
+{rna_summary}
+
+Spatial summary:
+{tcr_summary}
+
+Joint summary:
+{joint_summary}
+
+Validation summary:
+{validation_summary}
+
+Research state:
+{research_state}
+
+Literature summary:
+{literature_summary}
+
+Literature-derived hypothesis candidates:
+{literature_candidates_summary}
+
+Research brief:
+{context_summary}
+
+Extra user feedback:
+{user_feedback}
+
+Past analyses:
+{past_analyses}

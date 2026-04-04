@@ -1,4 +1,4 @@
-"""Reusable notebook helper functions for scRT-agent v2."""
+﻿"""Reusable notebook helper functions for scMAA."""
 
 from __future__ import annotations
 
@@ -261,3 +261,4 @@ def tissue_stratified_expansion_de(
     result = pd.concat(frames, ignore_index=True)
     print(result[["tissue", "names", "scores", "logfoldchanges", "pvals_adj"]].to_string(index=False))
     return result
+

@@ -1,0 +1,44 @@
+Choose the best literature-derived seed hypothesis for the next scRNA + spatial transcriptomics notebook step.
+
+Return a structured `LiteratureHypothesisChoice` with:
+- `candidate_title`
+- `hypothesis`
+- `analysis_type`
+- `selection_rationale`
+- `expected_evidence`
+- `guardrail_notes`
+
+Selection rules:
+- Choose from the literature-derived candidates below; do not invent a completely unrelated idea.
+- Prefer the candidate with the best combination of biological specificity, dataset feasibility, and information gain.
+- Break ties in favor of hypotheses that explicitly reuse a mechanism, pathway, or cell state named in the literature.
+- Do not choose a candidate that depends on unavailable annotations or external data.
+- Respect dataset guardrails and past analyses.
+- Prefer a first step that can support, weaken, or reframe the claim with one small notebook action.
+
+RNA summary:
+{rna_summary}
+
+Spatial summary:
+{tcr_summary}
+
+Joint summary:
+{joint_summary}
+
+Validation summary:
+{validation_summary}
+
+Research state:
+{research_state}
+
+Literature summary:
+{literature_summary}
+
+Literature-derived hypothesis candidates:
+{literature_candidates_summary}
+
+Research brief:
+{context_summary}
+
+Past analyses:
+{past_analyses}

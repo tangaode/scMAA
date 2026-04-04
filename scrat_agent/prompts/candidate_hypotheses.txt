@@ -1,0 +1,52 @@
+Propose a short ranked menu of candidate hypotheses for this scRNA + scATAC project before any notebook execution begins.
+
+Return a structured `CandidateHypothesisMenu` with:
+- `research_focus`
+- `candidates`
+
+Requirements:
+- Return 3 to 5 candidate hypotheses.
+- If the user feedback asks for an exact number of hypotheses, follow that exact number as long as it stays between 1 and 8.
+- User feedback may be written in Chinese, English, or mixed language. Read it literally.
+- Favor hypotheses that are scientifically meaningful, dataset-feasible, and easy for a user to compare.
+- Do not assume the user wants literature-inspired questions unless the literature summary clearly helps.
+- If the research brief already points to a preferred direction, make that visible in the ranking.
+- Each `first_test` should describe a concrete first notebook step, not vague future work.
+- Keep caveats realistic and tied to the actual data.
+- If the user asks to broaden, narrow, add more options, or avoid a certain direction, apply that request to the whole candidate menu.
+- Favor hypotheses about paired cell states, accessibility changes, gene activity, regulatory programs, marker concordance, or tissue-specific RNA-ATAC relationships.
+- If the validation summary or joint summary shows many shared observation names between RNA and ATAC, treat paired multiome analysis as the default mode.
+- If the ATAC object has `gene_activity` signals or `gene_activity_features`, prefer `joint` hypotheses over `rna_only` hypotheses unless the user explicitly asks for RNA-only work.
+- When paired cells and gene activity are available, include at least 2 clearly different `joint` hypotheses in the candidate menu.
+- Do not let a generic RNA-only hypothesis outrank a strong joint RNA-ATAC hypothesis when the dataset clearly supports paired analysis.
+- If you include an `rna_only` hypothesis despite strong paired support, make the reason explicit in the title or caveats.
+
+RNA summary:
+{rna_summary}
+
+ATAC summary:
+{tcr_summary}
+
+Joint summary:
+{joint_summary}
+
+Validation summary:
+{validation_summary}
+
+Research state:
+{research_state}
+
+Literature summary:
+{literature_summary}
+
+Literature-derived hypothesis candidates:
+{literature_candidates_summary}
+
+Research brief:
+{context_summary}
+
+Extra user feedback:
+{user_feedback}
+
+Past analyses:
+{past_analyses}

@@ -1,4 +1,4 @@
-"""Utility helpers for scRT-agent."""
+﻿"""Utility helpers for scMAA."""
 
 from __future__ import annotations
 
@@ -254,3 +254,4 @@ def summarize_notebook_cells(notebook_cells: Iterable[object], max_chars: int = 
             if output_preview:
                 parts.append(f"[Cell {idx} Outputs]\n{truncate_text(output_preview, 1200)}")
     return truncate_text("\n\n".join(parts), max_chars)
+

@@ -1,0 +1,58 @@
+Update the evidence ledger for the most recent notebook step.
+
+Return a structured `ResearchStepUpdate` with:
+- `step_title`
+- `claim`
+- `evidence_status` (`supports`, `weakens`, `reframes`, `inconclusive`, `setup_only`)
+- `supporting_evidence`
+- `caveats`
+- `next_priority_question`
+- `recommended_direction`
+
+Requirements:
+- Base the claim on actual notebook evidence, not on intentions.
+- If the step mostly provided diagnostics or setup, use `setup_only`.
+- If evidence is weak, say `inconclusive`.
+- Caveats should capture real confounders, missing controls, or execution limits.
+- The next priority question should help distinguish between competing explanations.
+
+Hypothesis:
+{hypothesis}
+
+Analysis type:
+{analysis_type}
+
+Priority question:
+{priority_question}
+
+Evidence goal:
+{evidence_goal}
+
+Decision rationale:
+{decision_rationale}
+
+Validation checks:
+{validation_checks}
+
+Code description:
+{code_description}
+
+Executed code:
+```python
+{code}
+```
+
+Notebook summary:
+{notebook_summary}
+
+Text output:
+{text_output}
+
+Validation summary:
+{validation_summary}
+
+Research state:
+{research_state}
+
+Step validation summary:
+{step_validation_summary}

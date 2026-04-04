@@ -1,4 +1,4 @@
-"""CLI entry point for interactive scRT-agent sessions."""
+﻿"""CLI entry point for interactive scMAA sessions."""
 
 from __future__ import annotations
 
@@ -173,7 +173,7 @@ def cmd_run(args) -> int:
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Interactive session CLI for scRT-agent v2."
+        description="Interactive session CLI for scMAA."
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
@@ -204,3 +204,4 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+

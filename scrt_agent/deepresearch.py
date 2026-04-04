@@ -1,4 +1,4 @@
-"""Deep Research wrapper for scRT-agent."""
+﻿"""Deep Research wrapper for scMAA."""
 
 from __future__ import annotations
 
@@ -41,3 +41,4 @@ class DeepResearcher:
             max_output_tokens=max_output_tokens,
         )
         return self._extract_output_text(response)
+

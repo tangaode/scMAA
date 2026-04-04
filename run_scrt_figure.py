@@ -1,4 +1,4 @@
-"""CLI entry point for scRT-agent figure mode."""
+﻿"""CLI entry point for scMAA figure mode."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from scrt_agent.figure_mode import build_publication_figure
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="scRT-agent v2 figure mode: generate a publication-style multi-panel figure."
+        description="scMAA figure mode: generate a publication-style multi-panel figure."
     )
     parser.add_argument("--rna-h5ad-path", required=True, help="Path to the RNA .h5ad file.")
     parser.add_argument("--tcr-path", required=True, help="Path to the TCR annotation table.")
@@ -42,3 +42,4 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+

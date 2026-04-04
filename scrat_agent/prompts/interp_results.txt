@@ -1,0 +1,54 @@
+Interpret the latest scRNA + scATAC notebook outputs.
+
+Write a short evidence-focused interpretation that:
+- says what the output supports
+- says what it weakens
+- states important caveats
+- proposes the most useful next question
+
+Do not overstate ATAC evidence as direct transcriptional proof.
+
+Hypothesis:
+{hypothesis}
+
+Analysis type:
+{analysis_type}
+
+Priority question:
+{priority_question}
+
+Evidence goal:
+{evidence_goal}
+
+Decision rationale:
+{decision_rationale}
+
+Validation checks:
+{validation_checks}
+
+Remaining plan:
+{analysis_plan}
+
+Current code:
+{code}
+
+Current code description:
+{code_description}
+
+Text output:
+{text_output}
+
+Validation summary:
+{validation_summary}
+
+Step validation summary:
+{step_validation_summary}
+
+Research brief:
+{context_summary}
+
+Past analyses:
+{past_analyses}
+
+Research state:
+{research_state}

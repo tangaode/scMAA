@@ -1,0 +1,85 @@
+Review the proposed scRNA + spatial transcriptomics research plan and next code step.
+
+Your output must be plain text critique only. Do not return JSON.
+
+Focus on:
+- whether the hypothesis is testable with the provided data
+- whether the priority question and evidence goal are aligned
+- whether the code really addresses the decision rationale
+- whether validation checks are concrete and scientifically relevant
+- whether the next code cell is executable in the notebook state
+- whether the proposal ignores dataset warnings or evidence ledger caveats
+- whether the step is too generic or low-yield given there are {num_steps_left} steps left
+
+Be direct and concrete. If the proposal is already strong, say so briefly and only mention minor issues.
+
+Hypothesis:
+{hypothesis}
+
+Analysis type:
+{analysis_type}
+
+Priority question:
+{priority_question}
+
+Evidence goal:
+{evidence_goal}
+
+Decision rationale:
+{decision_rationale}
+
+Validation checks:
+{validation_checks}
+
+Plan:
+{analysis_plan}
+
+Current code description:
+{code_description}
+
+Current next-step code:
+```python
+{first_step_code}
+```
+
+Analysis summary:
+{summary}
+
+Coding guidelines:
+{CODING_GUIDELINES}
+
+RNA summary:
+{rna_summary}
+
+Spatial summary:
+{tcr_summary}
+
+Joint summary:
+{joint_summary}
+
+Validation summary:
+{validation_summary}
+
+Research state:
+{research_state}
+
+Literature summary:
+{literature_summary}
+
+Literature-derived hypothesis candidates:
+{literature_candidates_summary}
+
+Selected literature seed:
+{selected_literature_seed}
+
+Research brief:
+{context_summary}
+
+Past analyses:
+{past_analyses}
+
+Notebook summary:
+{notebook_summary}
+
+Documentation:
+{documentation}

@@ -1,4 +1,4 @@
-"""CLI entry point for raw-data preparation."""
+﻿"""CLI entry point for raw-data preparation."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from scrt_agent.preprocess import prepare_dataset
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Prepare raw scRNA + scTCR files for scRT-agent."
+        description="Prepare raw scRNA + scTCR files for scMAA."
     )
     parser.add_argument(
         "--raw-input-path",
@@ -85,3 +85,4 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+

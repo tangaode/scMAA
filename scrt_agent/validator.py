@@ -1,4 +1,4 @@
-"""Validation helpers for scRT-agent v2."""
+﻿"""Validation helpers for scMAA."""
 
 from __future__ import annotations
 
@@ -221,3 +221,4 @@ class DatasetValidator:
         if not text_output.strip() and image_count == 0 and not error_message:
             summary.warnings.append("The step produced no visible evidence; avoid treating it as support for the hypothesis.")
         return summary
+

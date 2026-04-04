@@ -1,4 +1,4 @@
-"""CLI entry point for scRT-agent."""
+﻿"""CLI entry point for scMAA."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from scrt_agent.agent import ScRTAgent
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="scRT-agent v2: research-oriented agent for integrated scRNA + scTCR analysis."
+        description="scMAA: research-oriented agent for integrated scRNA + scTCR analysis."
     )
     parser.add_argument("--rna-h5ad-path", required=True, help="Path to the RNA .h5ad file.")
     parser.add_argument("--tcr-path", required=True, help="Path to the TCR annotation table.")
@@ -99,3 +99,4 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+

@@ -1,4 +1,4 @@
-"""Hypothesis generation for scRT-agent v2."""
+﻿"""Hypothesis generation for scMAA."""
 
 from __future__ import annotations
 
@@ -559,3 +559,4 @@ class HypothesisGenerator:
             ],
             ResearchStepUpdate,
         )
+

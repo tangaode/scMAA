@@ -1,0 +1,21 @@
+Write notebook code for integrated scRNA + scATAC analysis.
+
+Available packages on this machine:
+{AVAILABLE_PACKAGES}
+
+Rules:
+- Work with the objects created in notebook setup: `adata_rna`, `adata_atac`, `shared_obs_names`, `shared_gene_features`.
+- Prefer helper functions from `scrat_agent.notebook_tools`:
+  `paired_modality_subset`, `tumor_like_subset`, `resolve_gene_names`, `expression_frame`,
+  `atac_signal_frame`, `safe_rank_genes_groups`, `safe_rank_features_groups`,
+  `summarize_rna_atac_link`.
+- Use paired subsets when the claim requires cell-level RNA-ATAC comparison.
+- If `shared_obs_names` is non-empty and especially if it is large, prefer paired RNA-ATAC code over separate pooled modality summaries.
+- If ATAC contains `gene_activity`, use `atac_signal_frame` for gene-level ATAC support instead of pretending peaks are direct gene measurements.
+- For marker- or state-based hypotheses, prefer code that shows both RNA evidence and ATAC evidence in the same step.
+- When possible, end the first step with a compact RNA-ATAC concordance table, summary statistic, or figure rather than RNA-only output.
+- Treat ATAC accessibility or gene activity as supportive regulatory evidence, not direct proof of expression.
+- Do not assume `gene_activity` exists. Check layers first or use helper functions.
+- Keep code short and executable in one notebook cell.
+- Save plots by leaving matplotlib figures as the last output or by using normal notebook plotting.
+- Avoid package installs, shell commands, network calls, or long training loops.
