@@ -185,6 +185,28 @@ def _feedback_requests_joint(user_feedback: str) -> bool:
     return "joint" in text or "联合" in text
 
 
+def _normalize_candidate_text(text: str) -> str:
+    return re.sub(r"\s+", " ", (text or "").strip().lower())
+
+
+def _candidate_key(candidate) -> str:
+    return f"{_normalize_candidate_text(candidate.title)}||{_normalize_candidate_text(candidate.hypothesis)}"
+
+
+def _merge_distinct_candidates(existing: list, new_items: list, limit: int) -> list:
+    merged = list(existing)
+    seen = {_candidate_key(item) for item in merged}
+    for item in new_items:
+        key = _candidate_key(item)
+        if not key or key in seen:
+            continue
+        merged.append(item)
+        seen.add(key)
+        if len(merged) >= limit:
+            break
+    return merged
+
+
 class ScRTAgent:
     """Research-oriented agent for integrated scRNA + scTCR analysis."""
 
@@ -331,12 +353,18 @@ class ScRTAgent:
             if effective_feedback
             else "Hard menu constraints:\n- " + "\n- ".join(hard_constraints)
         )
-        menu = self.hypothesis_generator.generate_candidate_hypotheses(
-            research_state_summary=research_ledger.to_prompt_text(),
-            past_analyses="",
-            user_feedback=effective_feedback,
-        )
-        joint_light = sum(item.preferred_analysis_type == "joint" for item in menu.candidates) < max(3, target_count // 2 + 1)
+        research_state_summary = research_ledger.to_prompt_text()
+
+        def _generate_menu(feedback_text: str) -> CandidateHypothesisMenu:
+            return self.hypothesis_generator.generate_candidate_hypotheses(
+                research_state_summary=research_state_summary,
+                past_analyses="",
+                user_feedback=feedback_text,
+            )
+
+        menu = _generate_menu(effective_feedback)
+        joint_floor = max(3, target_count // 2 + 1)
+        joint_light = sum(item.preferred_analysis_type == "joint" for item in menu.candidates) < joint_floor
         needs_retry = (
             len(menu.candidates) != target_count
             or any(not item.first_test.strip() for item in menu.candidates)
@@ -348,12 +376,45 @@ class ScRTAgent:
                 + "\n\nThe previous menu did not satisfy the count or modality-balance requirements. "
                   "Retry and satisfy every hard constraint exactly."
             )
-            menu = self.hypothesis_generator.generate_candidate_hypotheses(
-                research_state_summary=research_ledger.to_prompt_text(),
-                past_analyses="",
-                user_feedback=retry_feedback,
+            menu = _generate_menu(retry_feedback)
+
+        merged_candidates = _merge_distinct_candidates([], menu.candidates, target_count)
+        supplement_attempt = 0
+        while len(merged_candidates) < target_count and supplement_attempt < 3:
+            supplement_attempt += 1
+            titles = [f"{idx + 1}. {item.title}" for idx, item in enumerate(merged_candidates)]
+            summary_lines = [
+                f"Current candidates already kept: {len(merged_candidates)}",
+                "Keep all existing candidates unchanged.",
+                f"Add {target_count - len(merged_candidates)} new, distinct candidates so that the final menu has exactly {target_count}.",
+                "Do not repeat existing titles or hypotheses.",
+                "Return a full candidate menu, not a partial patch.",
+                "Preserve joint-led balance unless the user explicitly requested otherwise.",
+            ]
+            if titles:
+                summary_lines.append("Existing titles:")
+                summary_lines.extend(f"- {line}" for line in titles)
+            top_up_feedback = effective_feedback + "\n\n" + "\n".join(summary_lines)
+            top_up_menu = _generate_menu(top_up_feedback)
+            merged_candidates = _merge_distinct_candidates(merged_candidates, top_up_menu.candidates, target_count)
+
+        if len(merged_candidates) < target_count:
+            self.logger.warning(
+                "Candidate menu remained undersized after top-up attempts. "
+                f"Returning {len(merged_candidates)} candidate(s); target was {target_count}."
             )
-        return menu
+        else:
+            merged_candidates = merged_candidates[:target_count]
+
+        joint_count = sum(item.preferred_analysis_type == "joint" for item in merged_candidates)
+        if joint_count < joint_floor and target_count > 1:
+            self.logger.warning(
+                "Candidate menu met count after top-up but joint coverage is still light. "
+                f"joint={joint_count}, target_floor={joint_floor}."
+            )
+
+        research_focus = menu.research_focus if getattr(menu, "research_focus", "").strip() else "Ranked integrated scRNA + scTCR candidate menu."
+        return CandidateHypothesisMenu(research_focus=research_focus, candidates=merged_candidates)
 
     def revise_hypothesis(self, *, hypothesis: str, user_feedback: str) -> str:
         research_ledger = self._make_research_ledger()
