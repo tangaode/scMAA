@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from queue import Empty
+import re
 import time
 
 import litellm
@@ -496,6 +497,63 @@ print("Notebook helper functions available: paired_tcr_subset, infer_tumor_like_
                 images.append(png.split(",")[-1] if "," in png else png)
         return images
 
+    def _plan_item_tokens(self, text: str) -> set[str]:
+        lowered = (text or "").lower()
+        tokens: set[str] = set()
+        special_groups = {
+            "pseudotime": ("pseudotime", "trajectory", "dpt", "palantir", "slingshot", "拟时序", "轨迹"),
+            "heatmap": ("heatmap", "热图"),
+            "differential_expression": ("differential", "expression", "deg", "rank_genes_groups", "差异表达", "差异基因"),
+            "cellphonedb": ("cellphonedb", "cell phone db", "cellphone db", "ligand", "receptor", "communication", "通讯"),
+            "paired_subset": ("paired_tcr_subset", "paired", "rna-tcr"),
+            "tumor_subset": ("tumor_like_subset", "tumor-like", "metastasis", "primary_focus", "btc"),
+            "clone": ("clonotype", "clone", "expansion", "sharing", "overlap"),
+            "vj_usage": ("v gene", "j gene", "trbv", "trav", "vj"),
+            "t_cell": ("t cell", "treg", "cd8", "cd4"),
+        }
+        for label, variants in special_groups.items():
+            if any(variant in lowered for variant in variants):
+                tokens.add(label)
+        for token in re.findall(r"[a-zA-Z][a-zA-Z0-9_+-]{3,}", lowered):
+            if token in {"with", "that", "this", "from", "using", "into", "then", "perform", "analysis", "visualize", "results", "known", "novel", "subset", "study", "identify", "compare"}:
+                continue
+            tokens.add(token)
+        return tokens
+
+    def _pending_plan_items(self, approved_plan_items: list[str], notebook: nbf.NotebookNode) -> tuple[list[str], list[str]]:
+        notebook_summary = summarize_notebook_cells(notebook.cells)
+        combined = notebook_summary.lower()
+        completed: list[str] = []
+        pending: list[str] = []
+        combined_tokens = self._plan_item_tokens(combined)
+        for item in approved_plan_items:
+            item_tokens = self._plan_item_tokens(item)
+            if item_tokens and (item_tokens & combined_tokens):
+                completed.append(item)
+            else:
+                pending.append(item)
+        return pending, completed
+
+    def _analysis_advances_pending_items(self, analysis, pending_items: list[str]) -> bool:
+        if not pending_items:
+            return True
+        combined = "\n".join(
+            [
+                analysis.priority_question,
+                analysis.evidence_goal,
+                analysis.code_description,
+                analysis.first_step_code,
+                "\n".join(analysis.analysis_plan),
+                analysis.summary,
+            ]
+        ).lower()
+        combined_tokens = self._plan_item_tokens(combined)
+        for item in pending_items:
+            item_tokens = self._plan_item_tokens(item)
+            if item_tokens and (item_tokens & combined_tokens):
+                return True
+        return False
+
     def interpret_results(
         self,
         notebook: nbf.NotebookNode,
@@ -613,10 +671,19 @@ print("Notebook helper functions available: paired_tcr_subset, infer_tumor_like_
             + "\n".join(f"{idx + 1}. {step}" for idx, step in enumerate(analysis.analysis_plan))
         )
         notebook.cells.append(new_markdown_cell(plan_markdown))
+        approved_plan_items = list(analysis.analysis_plan)
+        notebook.cells.append(
+            new_markdown_cell(
+                "## Approved Plan Contract\n\n"
+                "The following plan items were approved by the user and must be completed before the run is considered complete:\n"
+                + "\n".join(f"{idx + 1}. {step}" for idx, step in enumerate(approved_plan_items))
+            )
+        )
 
         self.start_persistent_kernel()
         last_interpretation = ""
         step_validation_summary = "No step validation notes yet."
+        total_step_budget = max(self.max_iterations, len(approved_plan_items), 3)
         try:
             ok, error = self.run_last_code_cell(notebook)
             if not ok:
@@ -624,7 +691,8 @@ print("Notebook helper functions available: paired_tcr_subset, infer_tumor_like_
 
             current_analysis = analysis
 
-            for step_idx in range(self.max_iterations):
+            for step_idx in range(total_step_budget):
+                pending_plan_items, completed_plan_items = self._pending_plan_items(approved_plan_items, notebook)
                 step_header = (
                     f"## Step {step_idx + 1} Summary\n\n"
                     f"{current_analysis.code_description}\n\n"
@@ -674,7 +742,15 @@ print("Notebook helper functions available: paired_tcr_subset, infer_tumor_like_
                     image_count=len(image_outputs),
                     error_message=None if success else error_message,
                 )
-                step_validation_summary = step_validation.to_prompt_text()
+                pending_plan_items, completed_plan_items = self._pending_plan_items(approved_plan_items, notebook)
+                enforcement_summary = (
+                    "Approved-plan enforcement\n"
+                    "Completed plan items:\n"
+                    + ("\n".join(f"- {item}" for item in completed_plan_items) if completed_plan_items else "- none yet")
+                    + "\n\nPending plan items:\n"
+                    + ("\n".join(f"- {item}" for item in pending_plan_items) if pending_plan_items else "- none")
+                )
+                step_validation_summary = step_validation.to_prompt_text() + "\n\n" + enforcement_summary
 
                 if success:
                     last_interpretation = self.interpret_results(
@@ -690,6 +766,7 @@ print("Notebook helper functions available: paired_tcr_subset, infer_tumor_like_
                         f"## Step {step_idx + 1} Validation\n\n{step_validation.to_markdown()}"
                     )
                 )
+                notebook.cells.append(new_markdown_cell(f"## Plan Enforcement Snapshot\n\n{enforcement_summary}"))
                 notebook.cells.append(
                     new_markdown_cell(
                         f"## Step {step_idx + 1} Interpretation\n\n{last_interpretation}"
@@ -724,8 +801,13 @@ print("Notebook helper functions available: paired_tcr_subset, infer_tumor_like_
 
                 self._save_notebook(notebook, notebook_path)
 
-                steps_left = self.max_iterations - step_idx - 1
-                if steps_left <= 0:
+                steps_left = total_step_budget - step_idx - 1
+                if steps_left <= 0 and not pending_plan_items:
+                    break
+                if steps_left <= 0 and pending_plan_items:
+                    last_interpretation = (
+                        (last_interpretation + "\n\n") if last_interpretation else ""
+                    ) + "The run stopped with pending approved plan items still unfinished."
                     break
 
                 current_analysis = self.hypothesis_generator.generate_next_step(
@@ -735,13 +817,37 @@ print("Notebook helper functions available: paired_tcr_subset, infer_tumor_like_
                     num_steps_left=steps_left,
                     research_state_summary=research_ledger.to_prompt_text(),
                     step_validation_summary=step_validation_summary,
+                    approved_plan_items=approved_plan_items,
+                    pending_plan_items=pending_plan_items,
                 )
+                if pending_plan_items and not self._analysis_advances_pending_items(current_analysis, pending_plan_items):
+                    strengthened_summary = (
+                        step_validation_summary
+                        + "\n\nThe proposed next step still does not clearly advance any pending approved plan item. "
+                          "The next step must explicitly target one of the pending plan items."
+                    )
+                    current_analysis = self.hypothesis_generator.generate_next_step(
+                        current_analysis=current_analysis,
+                        past_analyses=past_analyses,
+                        notebook_cells=notebook.cells,
+                        num_steps_left=steps_left,
+                        research_state_summary=research_ledger.to_prompt_text(),
+                        step_validation_summary=strengthened_summary,
+                        approved_plan_items=approved_plan_items,
+                        pending_plan_items=pending_plan_items,
+                    )
 
+            final_pending_items, final_completed_items = self._pending_plan_items(approved_plan_items, notebook)
             notebook.cells.append(
                 new_markdown_cell(
                     "## Final Summary\n\n"
                     f"{analysis.summary}\n\n"
                     f"{last_interpretation}\n\n"
+                    "Approved plan completion:\n"
+                    + ("Completed items:\n" + "\n".join(f"- {item}" for item in final_completed_items) if final_completed_items else "Completed items:\n- none")
+                    + "\n\n"
+                    + ("Pending items:\n" + "\n".join(f"- {item}" for item in final_pending_items) if final_pending_items else "Pending items:\n- none")
+                    + "\n\n"
                     "## Final Research Ledger\n\n"
                     f"{research_ledger.to_markdown()}"
                 )

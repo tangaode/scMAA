@@ -21,6 +21,8 @@ How to think:
 - Avoid placeholder cleaning or metadata-imputation steps unless the step validation summary shows a concrete need.
 - Prefer notebook helper functions instead of writing fresh DE/category-handling code from scratch.
 - There are only {num_steps_left} steps left after this one, so keep the scope realistic.
+- The approved plan is a binding execution contract. Any approved plan items that are still pending must remain visible and must be completed before the analysis is considered finished.
+- Extra analyses are allowed only if they do not replace the pending approved plan items.
 
 Current hypothesis:
 {hypothesis}
@@ -42,6 +44,12 @@ Current validation checks:
 
 Current remaining plan:
 {analysis_plan}
+
+Approved plan contract:
+{approved_plan_items}
+
+Pending required plan items:
+{pending_plan_items}
 
 Current code description:
 {current_code_description}

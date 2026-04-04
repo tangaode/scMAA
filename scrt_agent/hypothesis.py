@@ -73,6 +73,55 @@ def _plan_mentions_strategy(plan: "AnalysisPlan", feedback: str) -> bool:
     return True
 
 
+def _extract_plan_tokens(text: str) -> set[str]:
+    lowered = (text or "").lower()
+    tokens: set[str] = set()
+    special_groups = {
+        "pseudotime": ("pseudotime", "trajectory", "dpt", "palantir", "slingshot", "拟时序", "轨迹"),
+        "heatmap": ("heatmap", "热图"),
+        "differential_expression": ("differential", "expression", "deg", "rank_genes_groups", "差异表达", "差异基因"),
+        "cellphonedb": ("cellphonedb", "cell phone db", "cellphone db", "ligand", "receptor", "communication", "通讯"),
+        "paired_subset": ("paired_tcr_subset", "paired", "rna-tcr", "paired rna-tcr"),
+        "tumor_subset": ("tumor_like_subset", "tumor-like", "metastasis", "primary_focus", "btc"),
+        "clone": ("clonotype", "clone", "expansion", "sharing", "overlap"),
+        "vj_usage": ("v gene", "j gene", "trbv", "trav", "vj"),
+        "t_cell": ("t cell", "treg", "cd8", "cd4", "t cells"),
+    }
+    for label, variants in special_groups.items():
+        if any(variant in lowered for variant in variants):
+            tokens.add(label)
+    for token in re.findall(r"[a-zA-Z][a-zA-Z0-9_+-]{3,}", lowered):
+        if token in {"with", "that", "this", "from", "using", "into", "then", "perform", "analysis", "visualize", "results", "known", "novel", "subset", "study", "identify", "compare"}:
+            continue
+        tokens.add(token)
+    return tokens
+
+
+def _analysis_mentions_plan_items(plan: "AnalysisPlan", required_items: list[str]) -> bool:
+    if not required_items:
+        return True
+    combined = "\n".join(
+        [
+            plan.priority_question,
+            plan.evidence_goal,
+            plan.decision_rationale,
+            "\n".join(plan.validation_checks),
+            "\n".join(plan.analysis_plan),
+            plan.first_step_code,
+            plan.code_description,
+            plan.summary,
+        ]
+    ).lower()
+    combined_tokens = _extract_plan_tokens(combined)
+    for item in required_items:
+        tokens = _extract_plan_tokens(item)
+        if not tokens:
+            continue
+        if not (tokens & combined_tokens):
+            return False
+    return True
+
+
 class AnalysisPlan(BaseModel):
     hypothesis: str = Field(description="Specific and testable hypothesis.")
     analysis_type: str = Field(description="One of: rna_only, tcr_only, joint.")
@@ -615,6 +664,8 @@ class HypothesisGenerator:
         num_steps_left: int,
         research_state_summary: str,
         step_validation_summary: str,
+        approved_plan_items: list[str] | None = None,
+        pending_plan_items: list[str] | None = None,
     ) -> AnalysisPlan:
         notebook_summary = summarize_notebook_cells(notebook_cells)
         prompt = self._read_prompt("next_step.txt").format(
@@ -639,6 +690,8 @@ class HypothesisGenerator:
             selected_literature_seed="Keep following the literature-guided direction if it still fits the evidence.",
             research_state=research_state_summary or "No research ledger entries yet.",
             step_validation_summary=step_validation_summary or "No step validation notes.",
+            approved_plan_items="\n".join(f"- {item}" for item in (approved_plan_items or current_analysis.analysis_plan)) or "No approved plan items.",
+            pending_plan_items="\n".join(f"- {item}" for item in (pending_plan_items or [])) or "None.",
             past_analyses=past_analyses or "No previous analyses.",
             notebook_summary=notebook_summary or "Notebook is currently empty.",
             num_steps_left=num_steps_left,
@@ -660,6 +713,22 @@ class HypothesisGenerator:
                 num_steps_left,
                 research_state_summary,
                 rounds=1,
+            )
+        if pending_plan_items and not _analysis_mentions_plan_items(next_analysis, pending_plan_items):
+            retry_prompt = prompt + (
+                "\n\nApproved-plan enforcement retry:\n"
+                "The proposed next step did not clearly address the pending required plan items. "
+                "Revise the next step so at least one pending required item is explicitly advanced in the code, "
+                "code description, and remaining plan."
+            )
+            if self.log_prompts:
+                self.logger.log_prompt("user", retry_prompt, "next_step_retry")
+            next_analysis = self._complete_structured(
+                [
+                    {"role": "system", "content": self.coding_system_prompt},
+                    {"role": "user", "content": retry_prompt},
+                ],
+                AnalysisPlan,
             )
         return next_analysis
 
