@@ -61,8 +61,8 @@ class ScRTDesktopApp(tk.Tk):
         load_local_env_files(self.project_root)
 
         self.title("scMAA")
-        self.geometry("1360x940")
-        self.minsize(1180, 800)
+        self.geometry("1560x980")
+        self.minsize(1280, 840)
 
         self.message_queue: queue.Queue[tuple[str, object]] = queue.Queue()
         self.current_session_dir: Path | None = None
@@ -76,6 +76,16 @@ class ScRTDesktopApp(tk.Tk):
         self._poll_queue()
         self._set_defaults()
         self._update_mode_ui()
+        self.after(50, self._maximize_window)
+
+    def _maximize_window(self) -> None:
+        try:
+            self.state("zoomed")
+        except Exception:
+            try:
+                self.attributes("-zoomed", True)
+            except Exception:
+                return
 
     def _build_variables(self) -> None:
         sessions_home = self.project_root / "sessions"
@@ -127,7 +137,7 @@ class ScRTDesktopApp(tk.Tk):
         self._build_log_panel(right)
 
     def _build_prepare_panel(self, parent) -> None:
-        frame = ttk.LabelFrame(parent, text="1. Raw Data Preparation", padding=10)
+        frame = ttk.LabelFrame(parent, text="1. Raw Data Preparation", padding=8)
         frame.pack(fill="x", pady=(0, 10))
         frame.columnconfigure(1, weight=1)
 
@@ -172,7 +182,7 @@ class ScRTDesktopApp(tk.Tk):
         ttk.Button(frame, text="Prepare Raw Data", command=self.prepare_raw_data).grid(row=11, column=0, columnspan=4, sticky="ew", pady=(8, 0))
 
     def _build_agent_panel(self, parent) -> None:
-        frame = ttk.LabelFrame(parent, text="2. Interactive Analysis", padding=10)
+        frame = ttk.LabelFrame(parent, text="2. Interactive Analysis", padding=8)
         frame.pack(fill="x", pady=(0, 10))
         frame.columnconfigure(1, weight=1)
 
@@ -217,7 +227,7 @@ class ScRTDesktopApp(tk.Tk):
         ttk.Checkbutton(frame, text="Save prompts", variable=self.log_prompts_var).grid(row=11, column=0, columnspan=2, sticky="w", pady=2)
 
     def _build_action_panel(self, parent) -> None:
-        frame = ttk.LabelFrame(parent, text="3. Actions", padding=8)
+        frame = ttk.LabelFrame(parent, text="3. Actions", padding=6)
         frame.pack(fill="x")
         frame.columnconfigure(0, weight=1)
         frame.columnconfigure(1, weight=1)
@@ -233,7 +243,7 @@ class ScRTDesktopApp(tk.Tk):
             ("Open Session Folder", self.open_session_folder, 3, 1),
         ]
         for text, command, row, column in buttons:
-            ttk.Button(frame, text=text, command=command).grid(row=row, column=column, sticky="ew", padx=2, pady=2)
+            ttk.Button(frame, text=text, command=command).grid(row=row, column=column, sticky="ew", padx=2, pady=1)
 
     def _build_candidates_panel(self, parent) -> None:
         frame = ttk.LabelFrame(parent, text="Candidates And Plan Review", padding=10)
