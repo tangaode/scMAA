@@ -217,7 +217,7 @@ class ScRTDesktopApp(tk.Tk):
         ttk.Checkbutton(frame, text="Save prompts", variable=self.log_prompts_var).grid(row=11, column=0, columnspan=2, sticky="w", pady=2)
 
     def _build_action_panel(self, parent) -> None:
-        frame = ttk.LabelFrame(parent, text="3. Actions", padding=10)
+        frame = ttk.LabelFrame(parent, text="3. Actions", padding=8)
         frame.pack(fill="x")
         frame.columnconfigure(0, weight=1)
         frame.columnconfigure(1, weight=1)
@@ -230,18 +230,10 @@ class ScRTDesktopApp(tk.Tk):
             ("Regenerate Plan", self.regenerate_analysis_plan, 2, 0),
             ("Approve Plan", self.approve_plan, 2, 1),
             ("Run Analysis", self.run_analysis, 3, 0),
+            ("Open Session Folder", self.open_session_folder, 3, 1),
         ]
         for text, command, row, column in buttons:
-            ttk.Button(frame, text=text, command=command).grid(row=row, column=column, sticky="ew", padx=3, pady=3)
-
-        ttk.Button(frame, text="Open Session Folder", command=self.open_session_folder).grid(
-            row=4,
-            column=0,
-            columnspan=2,
-            sticky="ew",
-            padx=3,
-            pady=3,
-        )
+            ttk.Button(frame, text=text, command=command).grid(row=row, column=column, sticky="ew", padx=2, pady=2)
 
     def _build_candidates_panel(self, parent) -> None:
         frame = ttk.LabelFrame(parent, text="Candidates And Plan Review", padding=10)
