@@ -290,6 +290,7 @@ class ScRTDesktopApp(tk.Tk):
         self.detail_header_var.set(heading)
         self.candidate_detail.delete("1.0", "end")
         self.candidate_detail.insert("1.0", text)
+        self.candidate_detail.yview_moveto(0.0)
 
     def _queue_log(self, text: str) -> None:
         self.message_queue.put(("log", text))
@@ -769,11 +770,20 @@ class ScRTDesktopApp(tk.Tk):
     def _apply_regenerated_plan(self, index: int, revised_hypothesis: str, payload: dict) -> None:
         if 0 <= index < len(self.current_candidates):
             self.current_candidates[index]["hypothesis"] = revised_hypothesis
+            self.current_candidates[index]["preferred_analysis_type"] = payload.get(
+                "analysis_type",
+                self.current_candidates[index].get("preferred_analysis_type", ""),
+            )
+            self.current_candidates[index]["first_test"] = payload.get(
+                "priority_question",
+                self.current_candidates[index].get("first_test", ""),
+            )
         while len(self.current_candidate_plans) < len(self.current_candidates):
             self.current_candidate_plans.append(None)
         if 0 <= index < len(self.current_candidate_plans):
             self.current_candidate_plans[index] = payload
-        self._show_plan(payload, "Draft analysis plan")
+        self._append_log("Updated draft analysis plan is now shown on the right.\n")
+        self._render_candidate_detail(index)
 
     def approve_selected_hypothesis(self) -> None:
         if self.current_session_dir is None:
