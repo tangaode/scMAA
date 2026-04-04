@@ -388,6 +388,72 @@ class HypothesisGenerator:
         )
         return result
 
+    def revise_analysis_plan(
+        self,
+        current_plan: AnalysisPlan,
+        *,
+        research_state_summary: str,
+        past_analyses: str = "",
+        user_strategy_feedback: str = "",
+    ) -> AnalysisPlan:
+        normalized_feedback = user_strategy_feedback.strip()
+
+        def _make_prompt(strategy_feedback: str) -> str:
+            return self._read_prompt("revise_analysis_plan.txt").format(
+                current_plan_json=current_plan.model_dump_json(indent=2),
+                CODING_GUIDELINES=self.coding_guidelines,
+                max_iterations=self.max_iterations,
+                rna_summary=self.rna_summary,
+                tcr_summary=self.tcr_summary,
+                joint_summary=self.joint_summary,
+                validation_summary=self.validation_summary,
+                past_analyses=past_analyses or "No previous analyses.",
+                research_state=research_state_summary or "No research ledger entries yet.",
+                context_summary=self.context_summary,
+                literature_summary=self.literature_summary,
+                literature_candidates_summary=self.literature_candidates_summary,
+                user_strategy_feedback=strategy_feedback or "No extra strategy feedback.",
+            )
+
+        prompt = _make_prompt(normalized_feedback)
+        if self.log_prompts:
+            self.logger.log_prompt("user", prompt, "revise_analysis_plan")
+        result = self._complete_structured(
+            [
+                {"role": "system", "content": self.coding_system_prompt},
+                {"role": "user", "content": prompt},
+            ],
+            AnalysisPlan,
+        )
+        if normalized_feedback and not _plan_mentions_strategy(result, normalized_feedback):
+            retry_feedback = (
+                normalized_feedback
+                + "\n\nThe revised plan still does not visibly satisfy the user strategy feedback. "
+                  "Keep all untouched steps stable, but explicitly add the requested analysis elements."
+            )
+            retry_prompt = _make_prompt(retry_feedback)
+            if self.log_prompts:
+                self.logger.log_prompt("user", retry_prompt, "revise_analysis_plan_retry")
+            result = self._complete_structured(
+                [
+                    {"role": "system", "content": self.coding_system_prompt},
+                    {"role": "user", "content": retry_prompt},
+                ],
+                AnalysisPlan,
+            )
+        self.logger.log_response(
+            (
+                f"Current plan hypothesis: {current_plan.hypothesis}\n"
+                f"User strategy feedback: {normalized_feedback or 'No extra strategy feedback.'}\n"
+                f"Revised plan analysis type: {result.analysis_type}\n"
+                f"Priority question: {result.priority_question}\n"
+                f"Evidence goal: {result.evidence_goal}\n"
+                f"Plan steps:\n" + "\n".join(f"- {step}" for step in result.analysis_plan)
+            ),
+            "revise_analysis_plan",
+        )
+        return result
+
     def critique_step(
         self,
         analysis: AnalysisPlan,

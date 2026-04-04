@@ -1,0 +1,61 @@
+Revise the current scRNA + scTCR analysis plan below.
+
+Current plan:
+{current_plan_json}
+
+Return a structured `AnalysisPlan` with:
+- `hypothesis`
+- `analysis_type`
+- `priority_question`
+- `evidence_goal`
+- `decision_rationale`
+- `validation_checks`
+- `analysis_plan`
+- `first_step_code`
+- `code_description`
+- `summary`
+
+Requirements:
+- This is a plan revision task, not a fresh rewrite.
+- Preserve the current hypothesis unless the user explicitly asks to change it.
+- Preserve the current analysis type unless the user explicitly asks to change it.
+- Keep all unaffected plan items stable in meaning and order.
+- Only modify the parts needed to satisfy the user strategy feedback.
+- If the user asks to add a new analysis step, insert it without rewriting unrelated steps.
+- If the user asks for a specific plot, heatmap, pseudotime analysis, tissue comparison, marker set, or clone analysis, make that explicit in the updated plan.
+- Treat user strategy feedback as a high-priority constraint.
+- Prefer notebook helper functions over ad hoc category wrangling or repeated DE boilerplate.
+- Keep the plan executable and falsifiable.
+
+Coding guidelines:
+{CODING_GUIDELINES}
+
+RNA summary:
+{rna_summary}
+
+TCR summary:
+{tcr_summary}
+
+Joint summary:
+{joint_summary}
+
+Validation summary:
+{validation_summary}
+
+Research state:
+{research_state}
+
+Literature summary:
+{literature_summary}
+
+Literature-derived hypothesis candidates:
+{literature_candidates_summary}
+
+User strategy feedback:
+{user_strategy_feedback}
+
+Research brief:
+{context_summary}
+
+Past analyses:
+{past_analyses}

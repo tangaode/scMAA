@@ -18,7 +18,7 @@ from scrst_agent.agent import ScRSTAgent
 from scrst_agent.preprocess import prepare_dataset as prepare_spatial_dataset
 
 from .agent import ScRTAgent
-from .hypothesis import CandidateHypothesis, CandidateHypothesisMenu
+from .hypothesis import AnalysisPlan, CandidateHypothesis, CandidateHypothesisMenu
 from .interactive import format_candidate_menu_markdown, read_json, write_json
 from .preprocess import prepare_dataset as prepare_tcr_dataset
 
@@ -789,11 +789,23 @@ class ScRTDesktopApp(tk.Tk):
             messagebox.showwarning("No approved hypothesis", "Approve a hypothesis first.")
             return
         feedback_text = self.plan_feedback_text.get("1.0", "end").strip()
+        if not feedback_text:
+            messagebox.showwarning("No plan feedback", "Enter plan feedback before regenerating the plan.")
+            return
 
         def task():
             agent = self._build_agent(analysis_name=self.current_session_dir.name, output_home=str(self.current_session_dir.parent))
             hypothesis = approved_hypothesis_path.read_text(encoding="utf-8").strip()
-            plan = agent.build_plan_from_hypothesis(hypothesis, user_strategy_feedback=feedback_text)
+            draft_plan_path = self.current_session_dir / "draft_plan.json"
+            approved_plan_path = self.current_session_dir / "approved_plan.json"
+            if draft_plan_path.exists():
+                current_plan = AnalysisPlan(**read_json(draft_plan_path))
+                plan = agent.revise_plan(current_plan, user_strategy_feedback=feedback_text)
+            elif approved_plan_path.exists():
+                current_plan = AnalysisPlan(**read_json(approved_plan_path))
+                plan = agent.revise_plan(current_plan, user_strategy_feedback=feedback_text)
+            else:
+                plan = agent.build_plan_from_hypothesis(hypothesis, user_strategy_feedback=feedback_text)
             (self.current_session_dir / "draft_hypothesis.txt").write_text(hypothesis + "\n", encoding="utf-8")
             write_json(self.current_session_dir / "draft_plan.json", plan.model_dump())
             (self.current_session_dir / "draft_plan.md").write_text(

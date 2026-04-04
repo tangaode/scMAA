@@ -445,6 +445,15 @@ class ScRTAgent:
             user_strategy_feedback=user_strategy_feedback,
         )
 
+    def revise_plan(self, current_plan: AnalysisPlan, user_strategy_feedback: str):
+        research_ledger = self._make_research_ledger()
+        return self.hypothesis_generator.revise_analysis_plan(
+            current_plan,
+            past_analyses="",
+            research_state_summary=research_ledger.to_prompt_text(),
+            user_strategy_feedback=user_strategy_feedback,
+        )
+
     def _write_executed_hypotheses_artifact(self, executed_hypotheses: list[str]) -> Path:
         executed_hypotheses_path = self.output_dir / "executed_hypotheses.txt"
         executed_lines = [f"Analysis {idx + 1}: {text}" for idx, text in enumerate(executed_hypotheses)]
