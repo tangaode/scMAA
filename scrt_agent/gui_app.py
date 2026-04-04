@@ -18,6 +18,7 @@ from scrst_agent.agent import ScRSTAgent
 from scrst_agent.preprocess import prepare_dataset as prepare_spatial_dataset
 
 from .agent import ScRTAgent
+from .hypothesis import CandidateHypothesis, CandidateHypothesisMenu
 from .interactive import format_candidate_menu_markdown, read_json, write_json
 from .preprocess import prepare_dataset as prepare_tcr_dataset
 
@@ -627,26 +628,35 @@ class ScRTDesktopApp(tk.Tk):
         if not self.current_candidates:
             messagebox.showwarning("No candidates", "Generate hypotheses first.")
             return
+        if not self.candidate_list.curselection():
+            messagebox.showwarning("No selection", "Select one hypothesis to revise.")
+            return
         session_dir = self.current_session_dir or self._session_dir()
         feedback_text = self.hypothesis_feedback_text.get("1.0", "end").strip()
         if not feedback_text:
             messagebox.showwarning("No feedback", "Enter hypothesis feedback before regenerating hypotheses.")
             return
+        selected_index = self.candidate_list.curselection()[0]
+        selected_candidate = dict(self.current_candidates[selected_index])
 
         def task():
             session_dir.mkdir(parents=True, exist_ok=True)
             agent = self._build_agent(analysis_name=session_dir.name, output_home=str(session_dir.parent))
-            current_menu_summary = self._current_menu_summary()
-            combined_feedback = (
-                "Revise the current candidate menu instead of starting over.\n"
-                "Keep the menu at 5 candidates unless the user explicitly asks for a different total.\n"
-                "Preserve unaffected candidates when possible.\n\n"
-                f"Current candidate menu:\n{current_menu_summary}\n\n"
-                f"User revision request:\n{feedback_text}"
+            revised_hypothesis = agent.revise_hypothesis(
+                hypothesis=selected_candidate.get("hypothesis", "").strip(),
+                user_feedback=feedback_text,
             )
-            menu = agent.prepare_candidate_hypotheses(user_feedback=combined_feedback)
-            write_json(session_dir / "candidate_hypotheses.json", menu.model_dump())
-            (session_dir / "candidate_hypotheses.md").write_text(format_candidate_menu_markdown(menu), encoding="utf-8")
+            revised_candidate_payload = dict(selected_candidate)
+            revised_candidate_payload["hypothesis"] = revised_hypothesis
+            revised_menu = CandidateHypothesisMenu(
+                research_focus="User-revised hypothesis under review.",
+                candidates=[CandidateHypothesis(**revised_candidate_payload)],
+            )
+            write_json(session_dir / "candidate_hypotheses.json", revised_menu.model_dump())
+            (session_dir / "candidate_hypotheses.md").write_text(
+                format_candidate_menu_markdown(revised_menu),
+                encoding="utf-8",
+            )
             (session_dir / "candidate_generation_feedback.txt").write_text(feedback_text + "\n", encoding="utf-8")
             for artifact_name in (
                 "draft_hypothesis.txt",
@@ -668,11 +678,13 @@ class ScRTDesktopApp(tk.Tk):
                 plan_feedback=self.plan_feedback_text.get("1.0", "end").strip(),
             )
             self.current_session_dir = session_dir
-            self.current_candidates = [item.model_dump() for item in menu.candidates]
-            self.message_queue.put(("done", lambda menu_payload=menu.model_dump(): self._show_candidates(menu_payload)))
-            self._queue_log(f"Regenerated {len(menu.candidates)} candidate hypotheses.\n")
+            self.current_candidates = [revised_candidate_payload]
+            self.message_queue.put(
+                ("done", lambda menu_payload=revised_menu.model_dump(): self._show_candidates(menu_payload))
+            )
+            self._queue_log("Regenerated 1 revised hypothesis from the selected candidate.\n")
             self._queue_log(f"Hypothesis feedback applied: {feedback_text}\n")
-            self._queue_log("Review the updated candidate menu, then click Approve Hypothesis.\n")
+            self._queue_log("Review the revised hypothesis, then click Approve Hypothesis.\n")
 
         self._run_background("Regenerate hypotheses", task)
 
