@@ -113,6 +113,10 @@ def read_run_result_context(figure_output_dir: str | Path) -> dict[str, str]:
         "run_summary": "",
         "notebook_text": "",
         "final_interpretation": "",
+        "approved_plan_text": "",
+        "approved_strategy_feedback": "",
+        "approved_priority_question": "",
+        "approved_plan_steps": "",
     }
     run_summary_path = run_dir / "run_summary.txt"
     if run_summary_path.exists():
@@ -125,6 +129,24 @@ def read_run_result_context(figure_output_dir: str | Path) -> dict[str, str]:
     notebooks = sorted(run_dir.glob("*.ipynb"))
     if notebooks:
         context["notebook_text"] = _collect_notebook_text(notebooks[-1])
+    approved_plan_path = run_dir / "approved_plan.json"
+    if approved_plan_path.exists():
+        try:
+            approved_plan = json.loads(approved_plan_path.read_text(encoding="utf-8"))
+        except Exception:
+            approved_plan = {}
+        if isinstance(approved_plan, dict):
+            context["approved_plan_text"] = json.dumps(approved_plan, ensure_ascii=False, indent=2)
+            context["approved_priority_question"] = str(approved_plan.get("priority_question", "")).strip()
+            plan_steps = approved_plan.get("analysis_plan", [])
+            if isinstance(plan_steps, list):
+                context["approved_plan_steps"] = "\n".join(str(step) for step in plan_steps)
+    approved_strategy_path = run_dir / "approved_strategy_feedback.txt"
+    if approved_strategy_path.exists():
+        try:
+            context["approved_strategy_feedback"] = approved_strategy_path.read_text(encoding="utf-8").strip()
+        except Exception:
+            context["approved_strategy_feedback"] = ""
     return context
 
 

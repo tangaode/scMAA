@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+import re
 
 import anndata as ad
 import matplotlib
@@ -24,7 +25,6 @@ from scrt_agent.figure_common import (
     panel_label,
     plot_categorical_embedding,
     plot_text_panel,
-    rank_marker_matrix,
     read_run_result_context,
     save_figure_bundle,
 )
@@ -44,6 +44,24 @@ class FigureResult:
     png_path: Path
     pdf_path: Path
     summary_path: Path
+
+
+T_CELL_HINTS = ("t cell", "t cells", "cd8", "cd4", "treg", "regulatory t", "cytotoxic t")
+PSEUDOTIME_HINTS = ("pseudotime", "trajectory", "拟时序", "伪时序", "轨迹")
+DEFAULT_FOCUS_GENES = [
+    "TCF7",
+    "IL7R",
+    "LTB",
+    "PDCD1",
+    "TIGIT",
+    "HAVCR2",
+    "LAG3",
+    "CXCL13",
+    "CCL5",
+    "NKG7",
+    "GZMB",
+    "XBP1",
+]
 
 
 def _normalize_barcode(value: object) -> str:
@@ -105,19 +123,84 @@ def _prepare_joint_adata(rna_h5ad_path: str | Path, tcr_path: str | Path) -> ad.
     return adata
 
 
-def _plot_heatmap(ax, table: pd.DataFrame, title: str, cbar_label: str = "mean signal") -> None:
+def _plot_heatmap(ax, table: pd.DataFrame, title: str, cbar_label: str = "mean signal", cmap: str = "mako") -> None:
     if table.empty:
         ax.text(0.5, 0.5, "No data", ha="center", va="center", transform=ax.transAxes)
         ax.set_title(title)
         ax.axis("off")
         return
-    sns.heatmap(table, cmap="mako", linewidths=0.3, linecolor="white", ax=ax, cbar_kws={"label": cbar_label})
+    sns.heatmap(table, cmap=cmap, linewidths=0.3, linecolor="white", ax=ax, cbar_kws={"label": cbar_label})
     ax.set_title(title, fontsize=11)
     ax.set_xlabel("")
     ax.set_ylabel("")
 
 
-def _v_gene_usage_heatmap(adata, tissue_col: str, top_n: int = 10) -> pd.DataFrame:
+def _plot_stacked_bar(ax, table: pd.DataFrame, title: str) -> None:
+    if table.empty:
+        ax.text(0.5, 0.5, "No data", ha="center", va="center", transform=ax.transAxes)
+        ax.set_title(title)
+        ax.axis("off")
+        return
+    table.plot(kind="bar", stacked=True, ax=ax, colormap="tab20", width=0.85, legend=False)
+    ax.set_title(title, fontsize=11)
+    ax.set_xlabel("")
+    ax.set_ylabel("Fraction")
+    ax.tick_params(axis="x", rotation=35)
+
+
+def _standard_composition_table(adata: ad.AnnData, group_col: str, tissue_col: str, top_n_groups: int = 8) -> pd.DataFrame:
+    frame = adata.obs[[group_col, tissue_col]].dropna().copy()
+    if frame.empty:
+        return pd.DataFrame()
+    top_groups = frame[group_col].astype(str).value_counts().head(top_n_groups).index.tolist()
+    frame = frame.loc[frame[group_col].astype(str).isin(top_groups)]
+    table = pd.crosstab(frame[tissue_col].astype(str), frame[group_col].astype(str))
+    denom = table.sum(axis=1).replace(0, 1)
+    return table.div(denom, axis=0)
+
+
+def _clone_size_summary(paired: ad.AnnData, tissue_col: str) -> pd.DataFrame:
+    if paired.n_obs == 0 or "clone_size" not in paired.obs.columns:
+        return pd.DataFrame()
+    frame = paired.obs[[tissue_col, "clone_size"]].copy()
+    frame["clone_size_log10"] = np.log10(frame["clone_size"].clip(lower=1))
+    return frame
+
+
+def _plot_clone_size_distribution(ax, paired: ad.AnnData, tissue_col: str) -> None:
+    frame = _clone_size_summary(paired, tissue_col)
+    if frame.empty:
+        ax.text(0.5, 0.5, "No paired clonotype data", ha="center", va="center", transform=ax.transAxes)
+        ax.set_title("Clone size distribution by tissue")
+        ax.axis("off")
+        return
+    sns.boxplot(data=frame, x=tissue_col, y="clone_size_log10", ax=ax, color="#9ecae1", fliersize=1.5)
+    ax.set_title("Clone size distribution by tissue", fontsize=11)
+    ax.set_xlabel("")
+    ax.set_ylabel("log10(clone size)")
+    ax.tick_params(axis="x", rotation=35)
+
+
+def _tissue_clonotype_sharing(paired: ad.AnnData, tissue_col: str) -> pd.DataFrame:
+    if paired.n_obs == 0 or "clonotype_id" not in paired.obs.columns:
+        return pd.DataFrame()
+    frame = paired.obs[[tissue_col, "clonotype_id"]].dropna().copy()
+    if frame.empty:
+        return pd.DataFrame()
+    tissue_to_clones = {
+        tissue: set(group["clonotype_id"].astype(str))
+        for tissue, group in frame.groupby(tissue_col, observed=False)
+    }
+    tissues = list(tissue_to_clones.keys())
+    matrix = pd.DataFrame(index=tissues, columns=tissues, dtype=float)
+    for left in tissues:
+        for right in tissues:
+            union = tissue_to_clones[left] | tissue_to_clones[right]
+            matrix.loc[left, right] = len(tissue_to_clones[left] & tissue_to_clones[right]) / max(len(union), 1)
+    return matrix
+
+
+def _v_gene_usage_heatmap(adata: ad.AnnData, tissue_col: str, top_n: int = 10) -> pd.DataFrame:
     if "v_gene" not in adata.obs.columns:
         return pd.DataFrame()
     rows: list[dict[str, object]] = []
@@ -137,6 +220,196 @@ def _v_gene_usage_heatmap(adata, tissue_col: str, top_n: int = 10) -> pd.DataFra
     return table.div(denom, axis=1)
 
 
+def _expanded_fraction_table(adata: ad.AnnData, row_col: str, column_col: str) -> pd.DataFrame:
+    if adata.n_obs == 0 or "expanded_clone" not in adata.obs.columns:
+        return pd.DataFrame()
+    frame = adata.obs[[row_col, column_col, "expanded_clone"]].copy()
+    frame["expanded_clone"] = (
+        frame["expanded_clone"]
+        .astype(str)
+        .str.lower()
+        .isin({"true", "1", "expanded"})
+    )
+    return frame.groupby([row_col, column_col], observed=False)["expanded_clone"].mean().unstack(fill_value=0.0)
+
+
+def _cluster_marker_heatmap(adata: ad.AnnData, group_col: str, marker_csv_path: str | Path | None, top_n_groups: int = 8) -> pd.DataFrame:
+    marker_genes: list[str] = []
+    top_groups = adata.obs[group_col].astype(str).value_counts().head(top_n_groups).index.tolist()
+    if marker_csv_path and Path(marker_csv_path).exists():
+        marker_df = pd.read_csv(marker_csv_path)
+        if {"cluster", "names"}.issubset(marker_df.columns):
+            cluster_to_group = (
+                adata.obs.assign(_group=adata.obs[group_col].astype(str), _cluster=adata.obs["leiden"].astype(str))
+                .groupby("_cluster", observed=False)["_group"]
+                .agg(lambda s: s.value_counts().index[0] if not s.empty else "Unknown")
+                .to_dict()
+            )
+            if "used_for_annotation" in marker_df.columns:
+                marker_df = marker_df.loc[marker_df["used_for_annotation"].astype(bool)]
+            if "is_linc_like" in marker_df.columns:
+                marker_df = marker_df.loc[~marker_df["is_linc_like"].astype(bool)]
+            marker_df["mapped_group"] = marker_df["cluster"].astype(str).map(cluster_to_group)
+            marker_df = marker_df.loc[marker_df["mapped_group"].isin(top_groups)].copy()
+            sort_cols = ["mapped_group"]
+            ascending = [True]
+            if "rank" in marker_df.columns:
+                sort_cols.append("rank")
+                ascending.append(True)
+            elif "scores" in marker_df.columns:
+                sort_cols.append("scores")
+                ascending.append(False)
+            marker_df = marker_df.sort_values(sort_cols, ascending=ascending)
+            for group in top_groups:
+                chosen: list[str] = []
+                for gene in marker_df.loc[marker_df["mapped_group"] == group, "names"].astype(str):
+                    if gene in adata.var_names and gene not in chosen:
+                        chosen.append(gene)
+                    if len(chosen) >= 2:
+                        break
+                marker_genes.extend(chosen)
+    if not marker_genes and "rank_genes_groups" in adata.uns:
+        try:
+            for cluster in pd.Series(adata.obs["leiden"].astype(str)).value_counts().index.tolist():
+                frame = sc.get.rank_genes_groups_df(adata, group=cluster).head(2)
+                marker_genes.extend([gene for gene in frame["names"].astype(str).tolist() if gene in adata.var_names])
+        except Exception:
+            marker_genes = []
+    marker_genes = list(dict.fromkeys(marker_genes))
+    if not marker_genes:
+        return pd.DataFrame()
+    expr = expression_frame(adata, marker_genes, obs_columns=[group_col]).groupby(group_col, observed=False).mean()
+    keep_cols = [col for col in top_groups if col in expr.index]
+    expr = expr.loc[keep_cols]
+    return expr.T
+
+
+def _plan_requests_pseudotime(result_context: dict[str, str]) -> bool:
+    joined = "\n".join(
+        [
+            result_context.get("executed_hypothesis", ""),
+            result_context.get("approved_plan_text", ""),
+            result_context.get("approved_strategy_feedback", ""),
+            result_context.get("approved_plan_steps", ""),
+        ]
+    ).lower()
+    return any(token in joined for token in PSEUDOTIME_HINTS)
+
+
+def _focus_tcell_subset(adata: ad.AnnData, group_col: str, tissue_col: str) -> ad.AnnData:
+    working = paired_tcr_subset(adata)
+    try:
+        working = tumor_like_subset(working, tissue_col=tissue_col)
+    except Exception:
+        pass
+    labels = working.obs[group_col].astype(str)
+    mask = labels.str.lower().map(lambda text: any(token in text for token in T_CELL_HINTS))
+    subset = working[mask].copy()
+    if subset.n_obs < 200:
+        subset = working.copy()
+    return subset
+
+
+def _compute_pseudotime(subset: ad.AnnData) -> ad.AnnData | None:
+    if subset.n_obs < 100:
+        return None
+    working = subset.copy()
+    if "X_pca" not in working.obsm or working.obsm["X_pca"].shape[1] < 5:
+        sc.pp.pca(working, n_comps=min(30, max(5, working.n_vars - 1)))
+    sc.pp.neighbors(working, use_rep="X_pca", n_neighbors=min(20, max(8, working.n_obs // 80)))
+    sc.tl.diffmap(working)
+    root_idx = 0
+    if "expanded_clone" in working.obs.columns:
+        non_expanded = np.where(~working.obs["expanded_clone"].fillna(False).astype(bool).to_numpy())[0]
+        if len(non_expanded):
+            root_idx = int(non_expanded[0])
+    working.uns["iroot"] = root_idx
+    sc.tl.dpt(working)
+    if "X_umap" not in working.obsm:
+        sc.tl.umap(working)
+    return working
+
+
+def _pseudotime_bin_table(subset: ad.AnnData, genes: list[str], tissue_col: str) -> tuple[pd.DataFrame, pd.DataFrame]:
+    if "dpt_pseudotime" not in subset.obs.columns or not genes:
+        return pd.DataFrame(), pd.DataFrame()
+    work = subset.copy()
+    work.obs["pseudotime_bin"] = pd.qcut(
+        work.obs["dpt_pseudotime"].rank(method="first"),
+        q=min(5, max(2, work.n_obs // 150)),
+        labels=False,
+        duplicates="drop",
+    ).astype(str)
+    expr = expression_frame(work, genes, obs_columns=["pseudotime_bin"]).groupby("pseudotime_bin", observed=False).mean()
+    if "expanded_clone" in work.obs.columns:
+        clone_by_bin = (
+            work.obs.groupby(["pseudotime_bin", tissue_col], observed=False)["expanded_clone"]
+            .mean()
+            .unstack(fill_value=0.0)
+        )
+    else:
+        clone_by_bin = pd.DataFrame()
+    return expr.T, clone_by_bin
+
+
+def _focused_de_heatmap(subset: ad.AnnData, tissue_col: str) -> pd.DataFrame:
+    try:
+        de_frame = tissue_stratified_expansion_de(
+            subset,
+            tissue_col=tissue_col,
+            expansion_col="expanded_clone",
+            paired_only=False,
+            min_cells_per_group=15,
+            top_n=5,
+        )
+    except Exception:
+        return pd.DataFrame()
+    return de_frame.pivot_table(index="names", columns="tissue", values="logfoldchanges", aggfunc="mean").fillna(0.0)
+
+
+def _focus_genes(result_context: dict[str, str], adata: ad.AnnData, top_n: int = 8) -> list[str]:
+    result_genes = extract_result_genes(
+        available_genes=adata.var_names,
+        texts=[
+            result_context.get("approved_strategy_feedback", ""),
+            result_context.get("notebook_text", ""),
+            result_context.get("final_interpretation", ""),
+        ],
+        top_n=top_n,
+    )
+    merged = [gene for gene in DEFAULT_FOCUS_GENES if gene in adata.var_names]
+    for gene in result_genes:
+        if gene not in merged:
+            merged.append(gene)
+    if len(merged) < top_n:
+        genes = extract_hypothesis_genes(result_context.get("executed_hypothesis", ""), adata.var_names, top_n=top_n)
+        for gene in genes:
+            if gene not in merged:
+                merged.append(gene)
+    return merged[:top_n]
+
+
+def _summary_lines(
+    *,
+    figure_name: str,
+    rna_h5ad_path: str | Path,
+    tcr_path: str | Path,
+    paired: ad.AnnData,
+    hypothesis_text: str,
+    focus_genes: list[str],
+    pseudotime_used: bool,
+) -> list[str]:
+    return [
+        f"Figure name: {figure_name}",
+        f"RNA input: {Path(rna_h5ad_path).resolve()}",
+        f"TCR input: {Path(tcr_path).resolve()}",
+        f"Executed hypothesis: {hypothesis_text or 'none'}",
+        f"Paired cells: {paired.n_obs}",
+        f"Focus genes: {', '.join(focus_genes) or 'none'}",
+        f"Pseudotime requested or used: {'yes' if pseudotime_used else 'no'}",
+    ]
+
+
 def build_publication_figure(
     *,
     rna_h5ad_path: str | Path,
@@ -154,128 +427,177 @@ def build_publication_figure(
     tissue_col = "tissue" if "tissue" in adata.obs.columns else ("sample_key" if "sample_key" in adata.obs.columns else group_col)
     result_context = read_run_result_context(output_dir)
     hypothesis_text = result_context["executed_hypothesis"]
-    result_genes = extract_result_genes(
-        available_genes=adata.var_names,
-        texts=[
-            hypothesis_text,
-            result_context["notebook_text"],
-            result_context["final_interpretation"],
-        ],
-        top_n=10,
-    )
+    approved_priority = result_context.get("approved_priority_question", "")
+    marker_csv_path = Path(rna_h5ad_path).resolve().with_name("cluster_markers.csv")
 
     paired = paired_tcr_subset(adata)
-    rna_marker_matrix = rank_marker_matrix(adata, groupby=group_col, top_n_per_group=2)
-    expansion_heatmap = (
-        paired.obs.groupby([group_col, tissue_col], observed=False)["expanded_clone"].mean().unstack(fill_value=0.0)
-        if paired.n_obs
-        else pd.DataFrame()
-    )
+    composition = _standard_composition_table(adata, group_col, tissue_col)
+    marker_heatmap = _cluster_marker_heatmap(adata, group_col, marker_csv_path)
+    expansion_heatmap = _expanded_fraction_table(paired, group_col, tissue_col) if paired.n_obs else pd.DataFrame()
+    clone_sharing = _tissue_clonotype_sharing(paired, tissue_col=tissue_col)
     v_gene_heatmap = _v_gene_usage_heatmap(paired, tissue_col=tissue_col)
 
-    summary_fig = plt.figure(figsize=(18, 16))
-    gs = GridSpec(3, 2, figure=summary_fig, hspace=0.35, wspace=0.22)
+    summary_fig = plt.figure(figsize=(18, 24))
+    gs = GridSpec(4, 2, figure=summary_fig, hspace=0.42, wspace=0.24)
 
     ax_a = summary_fig.add_subplot(gs[0, 0])
     plot_categorical_embedding(ax_a, adata, color=group_col, title="scRNA UMAP with annotated cell types")
     panel_label(ax_a, "a")
 
     ax_b = summary_fig.add_subplot(gs[0, 1])
-    plot_categorical_embedding(ax_b, paired if paired.n_obs else adata, color="expanded_label", title="Paired cells: clonal expansion overlay")
+    _plot_stacked_bar(ax_b, composition, "Cell composition across tissues")
     panel_label(ax_b, "b")
 
     ax_c = summary_fig.add_subplot(gs[1, 0])
-    plot_categorical_embedding(ax_c, paired if paired.n_obs else adata, color=tissue_col, title="Paired cells: tissue or sample context")
+    plot_categorical_embedding(ax_c, paired if paired.n_obs else adata, color="expanded_label", title="Paired cells: clonal expansion overlay")
     panel_label(ax_c, "c")
 
     ax_d = summary_fig.add_subplot(gs[1, 1])
-    _plot_heatmap(ax_d, rna_marker_matrix.iloc[:16] if not rna_marker_matrix.empty else pd.DataFrame(), "Top scRNA marker heatmap")
+    _plot_heatmap(ax_d, expansion_heatmap, "Expanded clone fraction by cell type and tissue", cbar_label="expanded fraction")
     panel_label(ax_d, "d")
 
     ax_e = summary_fig.add_subplot(gs[2, 0])
-    _plot_heatmap(ax_e, expansion_heatmap, "Expanded clone fraction by cell type and tissue", cbar_label="expanded fraction")
+    _plot_clone_size_distribution(ax_e, paired, tissue_col)
     panel_label(ax_e, "e")
 
     ax_f = summary_fig.add_subplot(gs[2, 1])
-    _plot_heatmap(ax_f, v_gene_heatmap, "Top V gene usage across tissues", cbar_label="column fraction")
+    _plot_heatmap(ax_f, clone_sharing, "Clonotype sharing across tissues", cbar_label="Jaccard overlap", cmap="crest")
     panel_label(ax_f, "f")
 
-    summary_fig.suptitle("Standard scRNA + scTCR summary figure", fontsize=18, y=0.99)
-    summary_fig.tight_layout(rect=[0, 0, 1, 0.97])
+    ax_g = summary_fig.add_subplot(gs[3, 0])
+    _plot_heatmap(ax_g, marker_heatmap, "Top scRNA marker heatmap", cbar_label="mean RNA")
+    panel_label(ax_g, "g")
+
+    ax_h = summary_fig.add_subplot(gs[3, 1])
+    _plot_heatmap(ax_h, v_gene_heatmap, "Top V gene usage across tissues", cbar_label="column fraction")
+    panel_label(ax_h, "h")
+
+    summary_fig.suptitle("Standard scRNA + scTCR summary figure", fontsize=18, y=0.995)
+    summary_fig.tight_layout(rect=[0, 0, 1, 0.985])
     png_path, pdf_path, summary_path = save_figure_bundle(summary_fig, output_dir, figure_name)
 
-    hypothesis_genes = result_genes[:6] or extract_hypothesis_genes(hypothesis_text, adata.var_names, top_n=6)
-    if not hypothesis_genes:
-        defaults = ["CCL5", "NKG7", "GZMB", "PDCD1", "TIGIT", "CXCL13", "XBP1"]
-        hypothesis_genes = [gene for gene in defaults if gene in adata.var_names][:4]
-    hyp_group = tissue_col if tissue_col in adata.obs.columns and adata.obs[tissue_col].nunique() > 1 else "expanded_label"
-    hyp_expr = pd.DataFrame()
-    if hypothesis_genes:
-        hyp_expr = expression_frame(paired if paired.n_obs else adata, hypothesis_genes, obs_columns=[hyp_group]).groupby(hyp_group, observed=False).mean()
+    focus_subset = _focus_tcell_subset(adata, group_col, tissue_col)
+    plan_requests_pseudotime = _plan_requests_pseudotime(result_context)
+    pseudotime_subset = _compute_pseudotime(focus_subset) if plan_requests_pseudotime else None
+    focus_genes = _focus_genes(result_context, focus_subset if focus_subset.n_obs else adata)
+    trend_heatmap = pd.DataFrame()
+    clone_by_bin = pd.DataFrame()
+    if pseudotime_subset is not None and focus_genes:
+        trend_heatmap, clone_by_bin = _pseudotime_bin_table(pseudotime_subset, focus_genes[:6], tissue_col)
+    focus_de = _focused_de_heatmap(focus_subset, tissue_col=tissue_col) if focus_subset.n_obs else pd.DataFrame()
+    focus_clone = _expanded_fraction_table(focus_subset, tissue_col, group_col) if focus_subset.n_obs else pd.DataFrame()
 
-    hyp_de = pd.DataFrame()
-    if "expanded_clone" in paired.obs.columns and paired.obs["expanded_clone"].nunique() > 1:
-        try:
-            hyp_de = tissue_stratified_expansion_de(tumor_like_subset(adata), top_n=4)
-        except Exception:
-            hyp_de = pd.DataFrame()
+    hypothesis_text_block = "\n\n".join(
+        [
+            f"Executed hypothesis:\n{hypothesis_text or 'No executed hypothesis found.'}",
+            f"Approved priority question:\n{approved_priority or 'No approved priority question found.'}",
+            (
+                "Approved plan steps:\n"
+                + (result_context.get("approved_plan_steps", "No approved plan steps found.") or "No approved plan steps found.")
+            ),
+        ]
+    )
 
-    hyp_fig = plt.figure(figsize=(16, 12))
-    hyp_gs = GridSpec(2, 2, figure=hyp_fig, hspace=0.3, wspace=0.22)
+    hyp_fig = plt.figure(figsize=(18, 22))
+    hyp_gs = GridSpec(3, 2, figure=hyp_fig, hspace=0.36, wspace=0.24)
+
     ax_h1 = hyp_fig.add_subplot(hyp_gs[0, 0])
-    plot_text_panel(ax_h1, "Executed hypothesis", hypothesis_text)
+    plot_text_panel(ax_h1, "Plan-aligned hypothesis context", hypothesis_text_block)
     panel_label(ax_h1, "a")
 
     ax_h2 = hyp_fig.add_subplot(hyp_gs[0, 1])
-    if hypothesis_genes:
-        sc.pl.umap(adata, color=hypothesis_genes[0], ax=ax_h2, show=False, frameon=False, title=f"{hypothesis_genes[0]} expression")
+    if pseudotime_subset is not None and "dpt_pseudotime" in pseudotime_subset.obs.columns:
+        sc.pl.umap(
+            pseudotime_subset,
+            color="dpt_pseudotime",
+            ax=ax_h2,
+            show=False,
+            frameon=False,
+            title="Focused T-cell pseudotime",
+            color_map="viridis",
+        )
+    elif focus_genes:
+        sc.pl.umap(
+            focus_subset if focus_subset.n_obs else adata,
+            color=focus_genes[0],
+            ax=ax_h2,
+            show=False,
+            frameon=False,
+            title=f"{focus_genes[0]} expression in focused subset",
+        )
     else:
-        plot_categorical_embedding(ax_h2, adata, color=group_col, title="UMAP")
+        plot_categorical_embedding(ax_h2, focus_subset if focus_subset.n_obs else adata, color=group_col, title="Focused subset")
     panel_label(ax_h2, "b")
 
     ax_h3 = hyp_fig.add_subplot(hyp_gs[1, 0])
-    _plot_heatmap(ax_h3, hyp_expr.T if not hyp_expr.empty else pd.DataFrame(), "Hypothesis gene expression", cbar_label="mean RNA")
+    if pseudotime_subset is not None and "dpt_pseudotime" in pseudotime_subset.obs.columns:
+        frame = pseudotime_subset.obs[[tissue_col, "dpt_pseudotime"]].copy()
+        sns.boxplot(data=frame, x=tissue_col, y="dpt_pseudotime", ax=ax_h3, color="#bcbddc", fliersize=1.5)
+        ax_h3.set_title("Pseudotime distribution by tissue", fontsize=11)
+        ax_h3.set_xlabel("")
+        ax_h3.tick_params(axis="x", rotation=35)
+    else:
+        _plot_heatmap(ax_h3, focus_clone, "Expanded clone support in focused subset", cbar_label="expanded fraction")
     panel_label(ax_h3, "c")
 
     ax_h4 = hyp_fig.add_subplot(hyp_gs[1, 1])
-    if not hyp_de.empty:
-        de_table = hyp_de.pivot_table(index="names", columns="tissue", values="logfoldchanges", aggfunc="mean").fillna(0.0)
-        _plot_heatmap(ax_h4, de_table, "Hypothesis-related DE support", cbar_label="log fold change")
+    if not trend_heatmap.empty:
+        _plot_heatmap(ax_h4, trend_heatmap, "Marker dynamics along pseudotime", cbar_label="mean RNA", cmap="rocket")
     else:
-        clone_table = clone_expansion_table(adata, groupby=hyp_group if hyp_group in adata.obs.columns else tissue_col)
-        clone_display = clone_table.set_index(hyp_group if hyp_group in clone_table.columns else clone_table.columns[0])[["expanded_fraction"]]
-        _plot_heatmap(ax_h4, clone_display.T if not clone_display.empty else pd.DataFrame(), "Clone expansion support", cbar_label="expanded fraction")
+        _plot_heatmap(ax_h4, focus_de, "Focused differential-expression support", cbar_label="log fold change", cmap="vlag")
     panel_label(ax_h4, "d")
 
-    hyp_fig.suptitle("Hypothesis-driven scRNA + scTCR figure", fontsize=18, y=0.99)
-    hyp_fig.tight_layout(rect=[0, 0, 1, 0.97])
+    ax_h5 = hyp_fig.add_subplot(hyp_gs[2, 0])
+    if not clone_by_bin.empty:
+        _plot_heatmap(ax_h5, clone_by_bin.T, "Expanded clone fraction across pseudotime bins", cbar_label="expanded fraction", cmap="crest")
+    else:
+        clone_sharing_focus = _tissue_clonotype_sharing(focus_subset, tissue_col=tissue_col)
+        _plot_heatmap(ax_h5, clone_sharing_focus, "Focused clonotype sharing", cbar_label="Jaccard overlap", cmap="crest")
+    panel_label(ax_h5, "e")
+
+    ax_h6 = hyp_fig.add_subplot(hyp_gs[2, 1])
+    if not focus_de.empty:
+        _plot_heatmap(ax_h6, focus_de, "Plan-aligned differential-expression heatmap", cbar_label="log fold change", cmap="vlag")
+    else:
+        focus_expr = pd.DataFrame()
+        if focus_genes:
+            focus_expr = expression_frame(focus_subset if focus_subset.n_obs else adata, focus_genes[:6], obs_columns=[tissue_col]).groupby(tissue_col, observed=False).mean()
+        _plot_heatmap(ax_h6, focus_expr.T if not focus_expr.empty else pd.DataFrame(), "Focused marker expression by tissue", cbar_label="mean RNA")
+    panel_label(ax_h6, "f")
+
+    hyp_fig.suptitle("Hypothesis-driven scRNA + scTCR figure", fontsize=18, y=0.995)
+    hyp_fig.tight_layout(rect=[0, 0, 1, 0.985])
     hyp_png, hyp_pdf, hyp_summary = save_figure_bundle(hyp_fig, output_dir, f"{figure_name}_hypothesis")
 
-    summary_lines = [
-        f"Figure name: {figure_name}",
-        f"RNA input: {Path(rna_h5ad_path).resolve()}",
-        f"TCR input: {Path(tcr_path).resolve()}",
-        f"Executed hypothesis: {hypothesis_text or 'none'}",
-        f"Summary figure PNG: {png_path}",
-        f"Summary figure PDF: {pdf_path}",
-        f"Hypothesis figure PNG: {hyp_png}",
-        f"Hypothesis figure PDF: {hyp_pdf}",
-        f"Paired cells: {paired.n_obs}",
-        f"Result-context genes: {', '.join(result_genes[:12]) or 'none'}",
-        f"Hypothesis genes: {', '.join(hypothesis_genes) or 'none'}",
-        "",
-        "Top RNA marker genes:",
-        ", ".join(rna_marker_matrix.index.tolist()[:16]) if not rna_marker_matrix.empty else "none",
-    ]
-    summary_path.write_text("\n".join(summary_lines), encoding="utf-8")
+    summary_path.write_text(
+        "\n".join(
+            _summary_lines(
+                figure_name=figure_name,
+                rna_h5ad_path=rna_h5ad_path,
+                tcr_path=tcr_path,
+                paired=paired,
+                hypothesis_text=hypothesis_text,
+                focus_genes=focus_genes,
+                pseudotime_used=pseudotime_subset is not None,
+            )
+            + [
+                f"Summary figure PNG: {png_path}",
+                f"Summary figure PDF: {pdf_path}",
+                f"Hypothesis figure PNG: {hyp_png}",
+                f"Hypothesis figure PDF: {hyp_pdf}",
+            ]
+        ),
+        encoding="utf-8",
+    )
     hyp_summary.write_text(
         "\n".join(
             [
                 f"Executed hypothesis: {hypothesis_text or 'none'}",
-                f"Result-context genes: {', '.join(result_genes[:12]) or 'none'}",
-                f"Hypothesis genes: {', '.join(hypothesis_genes) or 'none'}",
-                f"Grouping variable: {hyp_group}",
-                "This figure is intended to test the executed hypothesis using RNA expression and clonal support panels.",
+                f"Approved priority question: {approved_priority or 'none'}",
+                f"Approved strategy feedback: {result_context.get('approved_strategy_feedback', '') or 'none'}",
+                f"Focus genes: {', '.join(focus_genes) or 'none'}",
+                f"Pseudotime used: {'yes' if pseudotime_subset is not None else 'no'}",
+                "This figure is built from the approved plan, the executed hypothesis, and focused RNA+TCR evidence panels.",
             ]
         ),
         encoding="utf-8",
