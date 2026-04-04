@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+import re
 from typing import Optional
 
 import instructor
@@ -32,6 +33,44 @@ def _normalize_model_name(model: str) -> str:
     if model.startswith("claude-"):
         return model
     return model
+
+
+def _strategy_expectations(feedback: str) -> list[tuple[str, tuple[str, ...]]]:
+    text = (feedback or "").lower()
+    expectations: list[tuple[str, tuple[str, ...]]] = []
+    keyword_sets = [
+        ("pseudotime", ("拟时序", "伪时序", "pseudotime", "trajectory", "轨迹")),
+        ("heatmap", ("热图", "heatmap")),
+        ("differential_expression", ("差异基因", "差异表达", "deg", "differential expression")),
+        ("t_cell", ("t细胞", "t cell", "t-cell", "cd8", "cd4", "treg")),
+    ]
+    for label, variants in keyword_sets:
+        if any(token in text for token in variants):
+            expectations.append((label, variants))
+    return expectations
+
+
+def _plan_mentions_strategy(plan: "AnalysisPlan", feedback: str) -> bool:
+    expectations = _strategy_expectations(feedback)
+    if not expectations:
+        return True
+    combined = "\n".join(
+        [
+            plan.priority_question,
+            plan.evidence_goal,
+            plan.decision_rationale,
+            "\n".join(plan.validation_checks),
+            "\n".join(plan.analysis_plan),
+            plan.first_step_code,
+            plan.code_description,
+            plan.summary,
+        ]
+    ).lower()
+    for _label, variants in expectations:
+        normalized_variants = tuple(token.lower() for token in variants)
+        if not any(token in combined for token in normalized_variants):
+            return False
+    return True
 
 
 class AnalysisPlan(BaseModel):
@@ -289,22 +328,26 @@ class HypothesisGenerator:
         seed_context: str = "No literature seed has been selected.",
         user_strategy_feedback: str = "",
     ) -> AnalysisPlan:
-        prompt = self._read_prompt("analysis_from_hypothesis.txt").format(
-            hypothesis=seeded_hypothesis,
-            CODING_GUIDELINES=self.coding_guidelines,
-            max_iterations=self.max_iterations,
-            rna_summary=self.rna_summary,
-            tcr_summary=self.tcr_summary,
-            joint_summary=self.joint_summary,
-            validation_summary=self.validation_summary,
-            past_analyses=past_analyses or "No previous analyses.",
-            research_state=research_state_summary or "No research ledger entries yet.",
-            context_summary=self.context_summary,
-            literature_summary=self.literature_summary,
-            literature_candidates_summary=self.literature_candidates_summary,
-            selected_literature_seed=seed_context,
-            user_strategy_feedback=user_strategy_feedback.strip() or "No extra strategy feedback.",
-        )
+        def _make_prompt(strategy_feedback: str) -> str:
+            return self._read_prompt("analysis_from_hypothesis.txt").format(
+                hypothesis=seeded_hypothesis,
+                CODING_GUIDELINES=self.coding_guidelines,
+                max_iterations=self.max_iterations,
+                rna_summary=self.rna_summary,
+                tcr_summary=self.tcr_summary,
+                joint_summary=self.joint_summary,
+                validation_summary=self.validation_summary,
+                past_analyses=past_analyses or "No previous analyses.",
+                research_state=research_state_summary or "No research ledger entries yet.",
+                context_summary=self.context_summary,
+                literature_summary=self.literature_summary,
+                literature_candidates_summary=self.literature_candidates_summary,
+                selected_literature_seed=seed_context,
+                user_strategy_feedback=strategy_feedback.strip() or "No extra strategy feedback.",
+            )
+
+        normalized_feedback = user_strategy_feedback.strip()
+        prompt = _make_prompt(normalized_feedback)
         if self.log_prompts:
             self.logger.log_prompt("user", prompt, "seeded_hypothesis")
         result = self._complete_structured(
@@ -314,7 +357,35 @@ class HypothesisGenerator:
             ],
             AnalysisPlan,
         )
+        if normalized_feedback and not _plan_mentions_strategy(result, normalized_feedback):
+            retry_feedback = (
+                normalized_feedback
+                + "\n\nThe previous draft plan did not visibly satisfy the user strategy feedback. "
+                  "Revise the plan so the requested analysis elements are explicit in the priority question, "
+                  "remaining plan, and summary."
+            )
+            retry_prompt = _make_prompt(retry_feedback)
+            if self.log_prompts:
+                self.logger.log_prompt("user", retry_prompt, "seeded_hypothesis_retry")
+            result = self._complete_structured(
+                [
+                    {"role": "system", "content": self.coding_system_prompt},
+                    {"role": "user", "content": retry_prompt},
+                ],
+                AnalysisPlan,
+            )
         result.hypothesis = seeded_hypothesis
+        self.logger.log_response(
+            (
+                f"Seeded hypothesis: {seeded_hypothesis}\n"
+                f"User strategy feedback: {normalized_feedback or 'No extra strategy feedback.'}\n"
+                f"Plan analysis type: {result.analysis_type}\n"
+                f"Priority question: {result.priority_question}\n"
+                f"Evidence goal: {result.evidence_goal}\n"
+                f"Plan steps:\n" + "\n".join(f"- {step}" for step in result.analysis_plan)
+            ),
+            "analysis_from_hypothesis",
+        )
         return result
 
     def critique_step(
