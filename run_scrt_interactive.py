@@ -43,6 +43,26 @@ def _build_agent_from_args(args, *, analysis_name: str, output_home: str) -> ScR
 def _load_agent_from_session(session_dir: Path, args) -> tuple[ScRTAgent, dict]:
     config = read_json(session_dir / "session_config.json")
     namespace = argparse.Namespace(**config)
+    defaults = {
+        "tcr_path": config.get("tcr_path") or config.get("modality_input_path"),
+        "model_name": config.get("model_name", "gpt-4o"),
+        "hypothesis_model": config.get("hypothesis_model"),
+        "execution_model": config.get("execution_model"),
+        "vision_model": config.get("vision_model", "gpt-4o"),
+        "max_iterations": config.get("max_iterations", 6),
+        "prompt_dir": config.get("prompt_dir"),
+        "max_fix_attempts": config.get("max_fix_attempts", 3),
+        "deepresearch": config.get("deepresearch", False),
+        "no_self_critique": config.get("no_self_critique", False),
+        "no_documentation": config.get("no_documentation", False),
+        "no_vlm": config.get("no_vlm", False),
+        "log_prompts": config.get("log_prompts", False),
+        "with_figure": config.get("with_figure", False),
+        "figure_name": config.get("figure_name"),
+    }
+    for key, value in defaults.items():
+        if not hasattr(namespace, key):
+            setattr(namespace, key, value)
     namespace.with_figure = getattr(args, "with_figure", config.get("with_figure", False))
     namespace.figure_name = getattr(args, "figure_name", config.get("figure_name"))
     agent = _build_agent_from_args(namespace, analysis_name=session_dir.name, output_home=str(session_dir.parent))
@@ -162,11 +182,11 @@ def cmd_review(args) -> int:
 def cmd_run(args) -> int:
     session_dir = Path(args.session_dir).resolve()
     agent, _ = _load_agent_from_session(session_dir, args)
-    approved_hypothesis_path = session_dir / "approved_hypothesis.txt"
-    if not approved_hypothesis_path.exists():
-        raise FileNotFoundError("No approved_hypothesis.txt found. Run the review step first.")
-    approved_hypothesis = approved_hypothesis_path.read_text(encoding="utf-8").strip()
-    summary_path = agent.run(seeded_hypotheses=[approved_hypothesis])
+    approved_plan_path = session_dir / "approved_plan.json"
+    if not approved_plan_path.exists():
+        raise FileNotFoundError("No approved_plan.json found. Run the review step first.")
+    approved_plan = read_json(approved_plan_path)
+    summary_path = agent.run_approved_plan(approved_plan)
     print(f"Run summary: {summary_path}")
     return 0
 

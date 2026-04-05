@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from queue import Empty
 import re
+import shutil
 import time
 
 import litellm
@@ -13,6 +14,7 @@ import openai
 from jupyter_client import KernelManager
 from nbformat.v4 import new_code_cell, new_markdown_cell, new_output
 
+from ..hypothesis import AnalysisPlan
 from ..research import ResearchLedger
 from ..utils import get_documentation, summarize_notebook_cells, truncate_text
 from ..validator import DatasetValidator
@@ -143,19 +145,36 @@ if PROJECT_ROOT not in sys.path:
 
 from scrt_agent.notebook_tools import (
     clone_expansion_table,
+    expanded_clone_tissue_de,
     expression_frame,
     ensure_obs_column,
     ensure_obs_columns,
     infer_tumor_like_tissues,
+    infer_primary_metastasis_tissues,
     paired_tcr_subset,
+    plot_de_barplot,
+    plot_de_heatmap,
+    plot_tissue_embedding,
     print_clone_expansion_table,
     resolve_gene_names,
     safe_rank_genes_groups,
+    summarize_de_pathways,
     tissue_stratified_expansion_de,
     tumor_like_subset,
 )
 
 sc.settings.verbosity = 2
+try:
+    from IPython import get_ipython
+    _ip = get_ipython()
+    if _ip is not None:
+        _ip.run_line_magic("matplotlib", "inline")
+except Exception:
+    pass
+try:
+    plt.switch_backend("module://matplotlib_inline.backend_inline")
+except Exception:
+    pass
 sc.settings.set_figure_params(dpi=100, facecolor="white", frameon=False)
 plt.rcParams["figure.figsize"] = (8, 6)
 sns.set_style("whitegrid")
@@ -382,7 +401,7 @@ print(f"Chosen merge mode: {{merge_mode}}")
 print(f"Clonotype scope: {{clonotype_scope}}")
 print(f"Cells with TCR annotations after merge: {{int(adata_rna.obs['has_tcr'].sum())}}")
 print(f"Expanded-clone fraction among TCR+ cells: {{float(adata_rna.obs.loc[adata_rna.obs['has_tcr'], 'expanded_clone'].mean()):.3f}}")
-print("Notebook helper functions available: paired_tcr_subset, infer_tumor_like_tissues, tumor_like_subset, resolve_gene_names, expression_frame, print_clone_expansion_table, safe_rank_genes_groups, tissue_stratified_expansion_de")
+print("Notebook helper functions available: paired_tcr_subset, infer_tumor_like_tissues, infer_primary_metastasis_tissues, tumor_like_subset, resolve_gene_names, expression_frame, print_clone_expansion_table, safe_rank_genes_groups, tissue_stratified_expansion_de, expanded_clone_tissue_de, plot_de_barplot, plot_de_heatmap, plot_tissue_embedding, summarize_de_pathways")
 """
         notebook.cells.append(new_code_cell(setup_code))
         return notebook
@@ -391,6 +410,14 @@ print("Notebook helper functions available: paired_tcr_subset, infer_tumor_like_
         path.parent.mkdir(parents=True, exist_ok=True)
         with open(path, "w", encoding="utf-8") as handle:
             nbf.write(notebook, handle)
+
+    def _backup_existing_notebook(self, path: Path) -> Path | None:
+        if not path.exists():
+            return None
+        timestamp = time.strftime("%Y%m%d_%H%M%S")
+        backup_path = path.with_name(f"{path.stem}_{timestamp}.bak{path.suffix}")
+        shutil.copy2(path, backup_path)
+        return backup_path
 
     def _get_last_code_cell(self, notebook: nbf.NotebookNode):
         for cell in reversed(notebook.cells):
@@ -500,18 +527,7 @@ print("Notebook helper functions available: paired_tcr_subset, infer_tumor_like_
     def _plan_item_tokens(self, text: str) -> set[str]:
         lowered = (text or "").lower()
         tokens: set[str] = set()
-        special_groups = {
-            "pseudotime": ("pseudotime", "trajectory", "dpt", "palantir", "slingshot", "拟时序", "轨迹"),
-            "heatmap": ("heatmap", "热图"),
-            "differential_expression": ("differential", "expression", "deg", "rank_genes_groups", "差异表达", "差异基因"),
-            "cellphonedb": ("cellphonedb", "cell phone db", "cellphone db", "ligand", "receptor", "communication", "通讯"),
-            "paired_subset": ("paired_tcr_subset", "paired", "rna-tcr"),
-            "tumor_subset": ("tumor_like_subset", "tumor-like", "metastasis", "primary_focus", "btc"),
-            "clone": ("clonotype", "clone", "expansion", "sharing", "overlap"),
-            "vj_usage": ("v gene", "j gene", "trbv", "trav", "vj"),
-            "t_cell": ("t cell", "treg", "cd8", "cd4"),
-        }
-        for label, variants in special_groups.items():
+        for label, variants in self._plan_signal_labels().items():
             if any(variant in lowered for variant in variants):
                 tokens.add(label)
         for token in re.findall(r"[a-zA-Z][a-zA-Z0-9_+-]{3,}", lowered):
@@ -520,15 +536,137 @@ print("Notebook helper functions available: paired_tcr_subset, infer_tumor_like_
             tokens.add(token)
         return tokens
 
+    def _plan_signal_labels(self) -> dict[str, tuple[str, ...]]:
+        return {
+            "pseudotime": ("pseudotime", "trajectory", "diffmap", "dpt", "palantir", "slingshot", "拟时序", "轨迹"),
+            "heatmap": ("heatmap", "热图"),
+            "barplot": ("barplot", "bar plot", "bar-chart", "bar chart", "柱状图"),
+            "differential_expression": ("differential", "expression", "deg", "rank_genes_groups", "safe_rank_genes_groups", "差异表达", "差异基因"),
+            "pathway_enrichment": ("pathway", "enrich", "enrichment", "gsea", "reactome", "kegg", "hallmark", "go:", "gene ontology", "msigdb"),
+            "cellphonedb": ("cellphonedb", "cell phone db", "cellphone db", "ligand", "receptor", "communication", "通讯"),
+            "paired_subset": ("paired_tcr_subset", "paired", "rna-tcr"),
+            "tumor_subset": ("tumor_like_subset", "tumor-like", "metastasis", "primary_focus", "btc"),
+            "clone": ("clonotype", "clone", "expansion", "sharing", "overlap"),
+            "vj_usage": ("v gene", "j gene", "trbv", "trav", "vj"),
+            "t_cell": ("t cell", "treg", "cd8", "cd4"),
+            "cluster": ("leiden", "cluster_cell_type", "cluster label"),
+            "visualization": ("plot", "visualize", "figure", "umap", "sc.pl", "plt."),
+            "resolve_gene_names": ("resolve_gene_names", "resolved genes", "gene name"),
+        }
+
+    def _plan_item_requirements(self, item: str) -> tuple[set[str], set[str], set[str]]:
+        item_tokens = self._plan_item_tokens(item)
+        required_all: set[str] = set()
+        required_any: set[str] = set()
+
+        for label in (
+            "pseudotime",
+            "differential_expression",
+            "pathway_enrichment",
+            "cellphonedb",
+            "paired_subset",
+            "tumor_subset",
+            "clone",
+            "vj_usage",
+            "t_cell",
+            "cluster",
+            "visualization",
+            "resolve_gene_names",
+        ):
+            if label in item_tokens:
+                required_all.add(label)
+
+        if "heatmap" in item_tokens and "barplot" in item_tokens:
+            required_any.update({"heatmap", "barplot"})
+        else:
+            if "heatmap" in item_tokens:
+                required_all.add("heatmap")
+            if "barplot" in item_tokens:
+                required_all.add("barplot")
+
+        return item_tokens, required_all, required_any
+
+    def _execution_evidence(self, notebook: nbf.NotebookNode) -> dict[str, object]:
+        code_parts: list[str] = []
+        output_parts: list[str] = []
+        image_count = 0
+        code_index = 0
+        for cell in notebook.cells:
+            if cell.get("cell_type") != "code":
+                continue
+            code_index += 1
+            if code_index == 1:
+                # Skip the initial setup cell so helper imports and boilerplate do not
+                # falsely count as completed approved-plan items.
+                continue
+            source = cell.get("source", "")
+            if isinstance(source, list):
+                source = "".join(source)
+            if str(source).strip():
+                code_parts.append(str(source))
+            for output in cell.get("outputs", []):
+                output_type = output.get("output_type")
+                if output_type == "stream":
+                    text = output.get("text", "")
+                    if isinstance(text, list):
+                        text = "".join(text)
+                    if str(text).strip():
+                        output_parts.append(str(text))
+                elif output_type in {"execute_result", "display_data"}:
+                    text = output.get("data", {}).get("text/plain", "")
+                    if isinstance(text, list):
+                        text = "".join(text)
+                    if str(text).strip():
+                        output_parts.append(str(text))
+                    if output_type == "display_data" and output.get("data", {}).get("image/png"):
+                        image_count += 1
+                        output_parts.append("[image_output]")
+                elif output_type == "error":
+                    output_parts.append(f"{output.get('ename', '')}: {output.get('evalue', '')}")
+        combined_text = "\n".join(code_parts + output_parts)
+        output_text = "\n".join(output_parts)
+        return {
+            "combined_text": combined_text,
+            "output_text": output_text,
+            "combined_tokens": self._plan_item_tokens(combined_text.lower()),
+            "image_count": image_count,
+        }
+
+    def _plan_item_completed(self, item: str, evidence: dict[str, object]) -> bool:
+        item_tokens, required_all, required_any = self._plan_item_requirements(item)
+        combined_tokens = evidence["combined_tokens"]
+        if not isinstance(combined_tokens, set):
+            return False
+        if required_all and not required_all.issubset(combined_tokens):
+            return False
+        if required_any and not (required_any & combined_tokens):
+            return False
+        if not required_all and not required_any:
+            return bool(item_tokens and (item_tokens & combined_tokens))
+
+        evidence_labels = required_all | required_any
+        combined_text = str(evidence.get("combined_text", "")).lower()
+        output_text = str(evidence.get("output_text", "")).lower()
+        image_count = int(evidence.get("image_count", 0) or 0)
+
+        if evidence_labels & {"visualization", "heatmap", "barplot"}:
+            figure_markers = ("[image_output]", ".png", ".pdf", "savefig", "saved figure", "figure saved", "publication_figure")
+            if image_count <= 0 and not any(marker in combined_text for marker in figure_markers):
+                return False
+
+        if "pathway_enrichment" in evidence_labels:
+            pathway_markers = ("pathway", "reactome", "kegg", "hallmark", "enrich", "enrichment", "gsea", "gene ontology", "go:")
+            if not any(marker in output_text for marker in pathway_markers):
+                return False
+
+        return True
+
     def _pending_plan_items(self, approved_plan_items: list[str], notebook: nbf.NotebookNode) -> tuple[list[str], list[str]]:
-        notebook_summary = summarize_notebook_cells(notebook.cells)
-        combined = notebook_summary.lower()
         completed: list[str] = []
         pending: list[str] = []
-        combined_tokens = self._plan_item_tokens(combined)
+        evidence = self._execution_evidence(notebook)
         for item in approved_plan_items:
-            item_tokens = self._plan_item_tokens(item)
-            if item_tokens and (item_tokens & combined_tokens):
+            if self._plan_item_completed(item, evidence):
                 completed.append(item)
             else:
                 pending.append(item)
@@ -537,6 +675,12 @@ print("Notebook helper functions available: paired_tcr_subset, infer_tumor_like_
     def _analysis_advances_pending_items(self, analysis, pending_items: list[str]) -> bool:
         if not pending_items:
             return True
+        code_text = "\n".join(
+            [
+                analysis.code_description,
+                analysis.first_step_code,
+            ]
+        ).lower()
         combined = "\n".join(
             [
                 analysis.priority_question,
@@ -547,12 +691,154 @@ print("Notebook helper functions available: paired_tcr_subset, infer_tumor_like_
                 analysis.summary,
             ]
         ).lower()
+        code_tokens = self._plan_item_tokens(code_text)
         combined_tokens = self._plan_item_tokens(combined)
         for item in pending_items:
-            item_tokens = self._plan_item_tokens(item)
-            if item_tokens and (item_tokens & combined_tokens):
+            item_tokens, required_all, required_any = self._plan_item_requirements(item)
+            proposal_tokens = combined_tokens
+            if {"visualization", "heatmap", "barplot", "pathway_enrichment"} & (required_all | required_any):
+                proposal_tokens = code_tokens
+            if required_all and not required_all.issubset(proposal_tokens):
+                continue
+            if required_any and not (required_any & proposal_tokens):
+                continue
+            if not required_all and not required_any and not (item_tokens and (item_tokens & proposal_tokens)):
+                continue
+            if "pathway_enrichment" in (required_all | required_any):
+                pathway_markers = ("pathway", "reactome", "kegg", "hallmark", "enrich", "enrichment", "gsea", "gene ontology", "go:")
+                if not any(marker in code_text for marker in pathway_markers):
+                    continue
+            if {"visualization", "heatmap", "barplot"} & (required_all | required_any):
+                figure_markers = ("plt.show", "savefig", "heatmap", "barplot", "bar plot", "sc.pl", "umap", "pca", "spatial")
+                if not any(marker in code_text for marker in figure_markers):
+                    continue
                 return True
         return False
+
+    def _plan_item_labels(self, items: list[str]) -> set[str]:
+        labels: set[str] = set()
+        for item in items:
+            _, required_all, required_any = self._plan_item_requirements(item)
+            labels.update(required_all)
+            labels.update(required_any)
+        return labels
+
+    def _build_plan_completion_fallback(
+        self,
+        current_analysis,
+        pending_items: list[str],
+        completed_items: list[str],
+    ) -> AnalysisPlan | None:
+        pending_labels = self._plan_item_labels(pending_items)
+        completed_labels = self._plan_item_labels(completed_items)
+        needs_figure = bool({"visualization", "heatmap", "barplot"} & pending_labels)
+        needs_pathway = "pathway_enrichment" in pending_labels
+        if not needs_figure and not needs_pathway:
+            return None
+        if "paired_subset" not in completed_labels and "differential_expression" not in completed_labels:
+            return None
+
+        code = f"""reference_tissue, case_tissue = infer_primary_metastasis_tissues(adata_rna, tissue_col="tissue")
+embedding_basis, embedding_df, embedding_ax = plot_tissue_embedding(
+    adata_rna,
+    tissue_col="tissue",
+    expansion_col="expanded_clone",
+    tissues=[reference_tissue, case_tissue],
+    paired_only=True,
+    basis="auto",
+    title=f"Expanded clonotypes {{reference_tissue}} vs {{case_tissue}}",
+)
+fig_dir = Path(PROJECT_ROOT) / "figures"
+fig_dir.mkdir(parents=True, exist_ok=True)
+embedding_path = fig_dir / f"scrt_expanded_clone_tissue_{{embedding_basis}}.png"
+embedding_ax.figure.savefig(embedding_path, dpi=150, bbox_inches="tight")
+plt.show()
+plt.close(embedding_ax.figure)
+print(f"Saved figure: {{embedding_path}}")
+
+de_subset, de_results = expanded_clone_tissue_de(
+    adata_rna,
+    tissue_col="tissue",
+    expansion_col="expanded_clone",
+    tissues=[reference_tissue, case_tissue],
+    case_tissue=case_tissue,
+    reference_tissue=reference_tissue,
+    paired_only=True,
+    min_cells_per_group=20,
+    top_n=40,
+)
+
+display_cols = ["names", "scores", "logfoldchanges", "pvals_adj"]
+print("Top DE genes for expanded clonotypes in tissue contrast:")
+print(de_results[display_cols].head(12).to_string(index=False))
+
+barplot_ax = plot_de_barplot(
+    de_results,
+    n=12,
+    title=f"Expanded clonotypes: {{case_tissue}} vs {{reference_tissue}}",
+)
+barplot_path = fig_dir / "scrt_expanded_clone_tissue_barplot.png"
+barplot_ax.figure.savefig(barplot_path, dpi=150, bbox_inches="tight")
+plt.show()
+plt.close(barplot_ax.figure)
+print(f"Saved figure: {{barplot_path}}")
+
+heatmap_genes = de_results["names"].dropna().astype(str).head(14).tolist()
+heatmap_matrix, heatmap_ax = plot_de_heatmap(
+    adata_rna,
+    heatmap_genes,
+    tissue_col="tissue",
+    tissues=[reference_tissue, case_tissue],
+    expansion_col="expanded_clone",
+    paired_only=True,
+    title=f"Expanded clonotypes heatmap: {{reference_tissue}} vs {{case_tissue}}",
+)
+heatmap_path = fig_dir / "scrt_expanded_clone_tissue_heatmap.png"
+heatmap_ax.figure.savefig(heatmap_path, dpi=150, bbox_inches="tight")
+plt.show()
+plt.close(heatmap_ax.figure)
+print(f"Saved figure: {{heatmap_path}}")
+
+pathway_tables = summarize_de_pathways(
+    de_results,
+    case_label=case_tissue,
+    reference_label=reference_tissue,
+    n_case=15,
+    n_reference=15,
+)
+"""
+        return AnalysisPlan(
+            hypothesis=current_analysis.hypothesis,
+            analysis_type=current_analysis.analysis_type,
+            priority_question=current_analysis.priority_question,
+            evidence_goal=(
+                "Produce the required DE visual summaries and a pathway-level interpretation "
+                "for expanded clonotypes between primary and metastatic tissues."
+            ),
+            decision_rationale=(
+                "The approved plan is already narrowed to visualization and functional interpretation, "
+                "so the next step should execute those deliverables directly instead of revisiting setup checks."
+            ),
+            validation_checks=[
+                "Use only paired TCR-positive cells annotated as expanded clonotypes.",
+                "Contrast inferred primary and metastasis tissue labels directly.",
+                "Generate a UMAP or PCA view with tissue annotations for the expanded-clonotype subset.",
+                "Render or save visible figures in the notebook session.",
+                "Print a pathway-oriented interpretation tied to the observed DE genes.",
+            ],
+            analysis_plan=[
+                "Visualize transcriptional differences using UMAP or PCA with tissue annotations.",
+                "Run expanded-clonotype differential expression between primary and metastatic tissues.",
+                "Summarize top differentially expressed genes with a barplot and heatmap.",
+                "Interpret the dominant functional programs or pathways represented by the top DE genes.",
+            ],
+            first_step_code=code,
+            code_description=(
+                "Generates a tissue-annotated embedding plus the required DE barplot and heatmap for "
+                "expanded clonotypes, then prints a curated pathway interpretation for the top genes."
+            ),
+            summary=current_analysis.summary,
+        )
 
     def interpret_results(
         self,
@@ -613,17 +899,41 @@ print("Notebook helper functions available: paired_tcr_subset, infer_tumor_like_
             except Exception as exc:
                 self.logger.warning(f"Vision interpretation failed; falling back to text-only mode. Error: {exc}")
 
-        response = litellm.completion(
-            model=self.model_name,
-            messages=[
-                {
-                    "role": "system",
-                    "content": "You interpret integrated scRNA + scTCR notebook outputs as a careful research scientist.",
-                },
-                {"role": "user", "content": prompt + f"\n\nNumber of figures produced: {len(images)}"},
-            ],
-        )
-        return response.choices[0].message.content or "No interpretation returned."
+        try:
+            response = litellm.completion(
+                model=self.model_name,
+                messages=[
+                    {
+                        "role": "system",
+                        "content": "You interpret integrated scRNA + scTCR notebook outputs as a careful research scientist.",
+                    },
+                    {"role": "user", "content": prompt + f"\n\nNumber of figures produced: {len(images)}"},
+                ],
+            )
+            return response.choices[0].message.content or "No interpretation returned."
+        except Exception as exc:
+            self.logger.warning(f"Text interpretation failed; using deterministic fallback. Error: {exc}")
+            fallback_lines = [
+                "### Deterministic Interpretation",
+                "",
+                f"- Step description: {current_analysis.code_description}",
+                f"- Text output length: {len(text_output)} characters.",
+                f"- Figures produced: {len(images)}.",
+            ]
+            if text_output:
+                fallback_lines.extend(
+                    [
+                        "- Key text output excerpt:",
+                        truncate_text(text_output, 1200),
+                    ]
+                )
+            fallback_lines.extend(
+                [
+                    "- This fallback summary was generated locally because the model interpretation request failed.",
+                    "- Review the notebook outputs directly before making strong biological claims.",
+                ]
+            )
+            return "\n".join(fallback_lines)
 
     def fix_code(self, code: str, error_message: str, notebook: nbf.NotebookNode) -> str:
         documentation = ""
@@ -633,11 +943,15 @@ print("Notebook helper functions available: paired_tcr_subset, infer_tumor_like_
             except Exception as exc:
                 documentation = f"<documentation lookup failed: {exc}>"
 
+        notebook_summary = truncate_text(summarize_notebook_cells(notebook.cells), 8000)
+        documentation = truncate_text(documentation or "No documentation available.", 6000)
+        trimmed_code = truncate_text(code, 6000)
+        trimmed_error = truncate_text(error_message, 3000)
         prompt = self._read_prompt("fix_code.txt").format(
-            current_code=code,
-            error_message=error_message,
-            notebook_summary=summarize_notebook_cells(notebook.cells),
-            documentation=documentation or "No documentation available.",
+            current_code=trimmed_code,
+            error_message=trimmed_error,
+            notebook_summary=notebook_summary,
+            documentation=documentation,
             available_packages=self.coding_guidelines,
         )
         response = litellm.completion(
@@ -657,8 +971,11 @@ print("Notebook helper functions available: paired_tcr_subset, infer_tumor_like_
         analysis_idx: int = 0,
         seeded: bool = False,
     ) -> tuple[str, ResearchLedger]:
-        notebook = self.create_initial_notebook(analysis, research_ledger)
         notebook_path = self.output_dir / f"{self.analysis_name}_analysis_{analysis_idx + 1}.ipynb"
+        backup_path = self._backup_existing_notebook(notebook_path)
+        if backup_path is not None:
+            self.logger.info(f"Backed up existing notebook to {backup_path}")
+        notebook = self.create_initial_notebook(analysis, research_ledger)
 
         plan_markdown = (
             "## Analysis Plan\n"
@@ -683,7 +1000,7 @@ print("Notebook helper functions available: paired_tcr_subset, infer_tumor_like_
         self.start_persistent_kernel()
         last_interpretation = ""
         step_validation_summary = "No step validation notes yet."
-        total_step_budget = max(self.max_iterations, len(approved_plan_items), 3)
+        total_step_budget = max(self.max_iterations, len(approved_plan_items) + 2, 3)
         try:
             ok, error = self.run_last_code_cell(notebook)
             if not ok:
@@ -800,6 +1117,8 @@ print("Notebook helper functions available: paired_tcr_subset, infer_tumor_like_
                 notebook.cells.append(new_markdown_cell(f"## Research Ledger Snapshot\n\n{research_ledger.to_markdown()}"))
 
                 self._save_notebook(notebook, notebook_path)
+                if not pending_plan_items:
+                    break
 
                 steps_left = total_step_budget - step_idx - 1
                 if steps_left <= 0 and not pending_plan_items:
@@ -810,32 +1129,56 @@ print("Notebook helper functions available: paired_tcr_subset, infer_tumor_like_
                     ) + "The run stopped with pending approved plan items still unfinished."
                     break
 
-                current_analysis = self.hypothesis_generator.generate_next_step(
-                    current_analysis=current_analysis,
-                    past_analyses=past_analyses,
-                    notebook_cells=notebook.cells,
-                    num_steps_left=steps_left,
-                    research_state_summary=research_ledger.to_prompt_text(),
-                    step_validation_summary=step_validation_summary,
-                    approved_plan_items=approved_plan_items,
-                    pending_plan_items=pending_plan_items,
+                fallback_analysis = self._build_plan_completion_fallback(
+                    current_analysis,
+                    pending_plan_items,
+                    completed_plan_items,
                 )
-                if pending_plan_items and not self._analysis_advances_pending_items(current_analysis, pending_plan_items):
-                    strengthened_summary = (
-                        step_validation_summary
-                        + "\n\nThe proposed next step still does not clearly advance any pending approved plan item. "
-                          "The next step must explicitly target one of the pending plan items."
-                    )
+                if fallback_analysis is not None:
+                    current_analysis = fallback_analysis
+                else:
                     current_analysis = self.hypothesis_generator.generate_next_step(
                         current_analysis=current_analysis,
                         past_analyses=past_analyses,
                         notebook_cells=notebook.cells,
                         num_steps_left=steps_left,
                         research_state_summary=research_ledger.to_prompt_text(),
-                        step_validation_summary=strengthened_summary,
+                        step_validation_summary=step_validation_summary,
                         approved_plan_items=approved_plan_items,
                         pending_plan_items=pending_plan_items,
                     )
+                if pending_plan_items and not self._analysis_advances_pending_items(current_analysis, pending_plan_items):
+                    fallback_analysis = self._build_plan_completion_fallback(
+                        current_analysis,
+                        pending_plan_items,
+                        completed_plan_items,
+                    )
+                    if fallback_analysis is not None:
+                        current_analysis = fallback_analysis
+                    else:
+                        strengthened_summary = (
+                            step_validation_summary
+                            + "\n\nThe proposed next step still does not clearly advance any pending approved plan item. "
+                              "The next step must explicitly target one of the pending plan items."
+                        )
+                        current_analysis = self.hypothesis_generator.generate_next_step(
+                            current_analysis=current_analysis,
+                            past_analyses=past_analyses,
+                            notebook_cells=notebook.cells,
+                            num_steps_left=steps_left,
+                            research_state_summary=research_ledger.to_prompt_text(),
+                            step_validation_summary=strengthened_summary,
+                            approved_plan_items=approved_plan_items,
+                            pending_plan_items=pending_plan_items,
+                        )
+                        if pending_plan_items and not self._analysis_advances_pending_items(current_analysis, pending_plan_items):
+                            fallback_analysis = self._build_plan_completion_fallback(
+                                current_analysis,
+                                pending_plan_items,
+                                completed_plan_items,
+                            )
+                            if fallback_analysis is not None:
+                                current_analysis = fallback_analysis
 
             final_pending_items, final_completed_items = self._pending_plan_items(approved_plan_items, notebook)
             notebook.cells.append(

@@ -99,7 +99,21 @@ def tumor_like_subset(adata, tissue_col: str = "tissue", copy: bool = True):
     return subset
 
 
-def resolve_gene_names(adata, genes: Iterable[str], var_fields: Iterable[str] = ("gene_name", "gene", "symbol")) -> dict[str, str]:
+def resolve_gene_names(
+    adata_or_genes,
+    genes: Iterable[str] | None = None,
+    var_fields: Iterable[str] = ("gene_name", "gene", "symbol"),
+) -> dict[str, str]:
+    if genes is None:
+        if hasattr(adata_or_genes, "var_names") and hasattr(adata_or_genes, "obs"):
+            return adata_or_genes
+        gene_iterable = adata_or_genes
+        try:
+            return {str(gene).strip(): str(gene).strip() for gene in gene_iterable if str(gene).strip()}
+        except TypeError:
+            requested = str(adata_or_genes).strip()
+            return {requested: requested} if requested else {}
+    adata = adata_or_genes
     lookup = {str(name).upper(): str(name) for name in adata.var_names}
     for field in var_fields:
         if field in adata.var.columns:

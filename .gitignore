@@ -9,6 +9,7 @@ runs/
 sessions/
 figure_runs/
 logs/
+figures/
 
 .env
 OPENAI.env

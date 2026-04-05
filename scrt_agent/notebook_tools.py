@@ -4,9 +4,11 @@ from __future__ import annotations
 
 from typing import Iterable
 
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import scanpy as sc
+import seaborn as sns
 
 
 TUMOR_HINT_TOKENS = ("tumor", "metast", "primary", "focus", "lesion", "cancer", "carcinoma", "malignan")
@@ -22,6 +24,78 @@ COMMON_GENE_ALIASES = {
     "CTLA4": "CTLA4",
     "XBP-1": "XBP1",
     "XBP1": "XBP1",
+}
+CURATED_T_CELL_PROGRAMS = {
+    "Cytotoxic effector pathway": {
+        "CCL4",
+        "CCL5",
+        "CTSW",
+        "FCGR3A",
+        "GNLY",
+        "GZMB",
+        "GZMH",
+        "IFNG",
+        "KLRD1",
+        "NKG7",
+        "PRF1",
+    },
+    "T-cell activation pathway": {
+        "CD27",
+        "CD69",
+        "CD8A",
+        "CD8B",
+        "IL7R",
+        "LTB",
+        "MALAT1",
+        "SAT1",
+        "TRAC",
+    },
+    "Checkpoint/exhaustion pathway": {
+        "CTLA4",
+        "ENTPD1",
+        "HAVCR2",
+        "LAG3",
+        "PDCD1",
+        "TIGIT",
+        "TOX",
+    },
+    "Interferon response pathway": {
+        "IFI6",
+        "IFI44L",
+        "IFIT1",
+        "IFIT2",
+        "IFIT3",
+        "IFITM1",
+        "IFITM2",
+        "IFITM3",
+        "IRF7",
+        "ISG15",
+        "MX1",
+        "OAS1",
+        "STAT1",
+        "XBP1",
+    },
+    "Chemokine trafficking pathway": {
+        "CCL3",
+        "CCL4",
+        "CCL5",
+        "CCR7",
+        "CXCL13",
+        "CXCR3",
+        "IL32",
+        "LTB",
+        "S1PR1",
+    },
+    "Antigen presentation pathway": {
+        "B2M",
+        "HLA-A",
+        "HLA-B",
+        "HLA-C",
+        "HLA-DRA",
+        "HLA-DRB1",
+        "TAP1",
+        "TAPBP",
+    },
 }
 
 
@@ -68,6 +142,21 @@ def infer_tumor_like_tissues(adata, tissue_col: str = "tissue") -> list[str]:
     return inferred
 
 
+def infer_primary_metastasis_tissues(adata, tissue_col: str = "tissue") -> tuple[str, str]:
+    """Infer a primary/metastasis tissue pair from observed metadata."""
+    if tissue_col not in adata.obs.columns:
+        raise KeyError(f"'{tissue_col}' is not present in adata.obs.")
+    labels = [str(value).strip() for value in adata.obs[tissue_col].dropna().astype(str).unique().tolist()]
+    primary = [label for label in labels if "primary" in label.lower()]
+    metastasis = [label for label in labels if "metast" in label.lower()]
+    if not primary or not metastasis:
+        raise ValueError(
+            f"Could not infer both primary and metastasis labels from '{tissue_col}'. "
+            f"Observed labels: {labels}"
+        )
+    return primary[0], metastasis[0]
+
+
 def tumor_like_subset(adata, tissue_col: str = "tissue", copy: bool = True):
     """Return a tumor-like subset using heuristic tissue label inference."""
     tissues = infer_tumor_like_tissues(adata, tissue_col=tissue_col)
@@ -83,8 +172,23 @@ def tumor_like_subset(adata, tissue_col: str = "tissue", copy: bool = True):
     return subset
 
 
-def resolve_gene_names(adata, genes: Iterable[str]) -> dict[str, str]:
-    """Resolve requested markers to canonical dataset gene names."""
+def resolve_gene_names(adata_or_genes, genes: Iterable[str] | None = None) -> dict[str, str]:
+    """Resolve requested markers to canonical dataset gene names.
+
+    Supports both ``resolve_gene_names(adata, genes)`` and a permissive fallback
+    ``resolve_gene_names(genes)``. The fallback returns an identity mapping so
+    downstream code can continue when the model omits the dataset argument.
+    """
+    if genes is None:
+        if hasattr(adata_or_genes, "var_names") and hasattr(adata_or_genes, "obs"):
+            return adata_or_genes
+        gene_iterable = adata_or_genes
+        try:
+            return {str(gene).strip(): str(gene).strip() for gene in gene_iterable if str(gene).strip()}
+        except TypeError:
+            requested = str(adata_or_genes).strip()
+            return {requested: requested} if requested else {}
+    adata = adata_or_genes
     var_lookup = {str(name).upper(): str(name) for name in adata.var_names}
     resolved: dict[str, str] = {}
     for gene in genes:
@@ -261,4 +365,284 @@ def tissue_stratified_expansion_de(
     result = pd.concat(frames, ignore_index=True)
     print(result[["tissue", "names", "scores", "logfoldchanges", "pvals_adj"]].to_string(index=False))
     return result
+
+
+def expanded_clone_tissue_de(
+    adata,
+    *,
+    tissue_col: str = "tissue",
+    expansion_col: str = "expanded_clone",
+    tissues: Iterable[str] | None = None,
+    case_tissue: str | None = None,
+    reference_tissue: str | None = None,
+    paired_only: bool = True,
+    min_cells_per_group: int = 20,
+    method: str = "wilcoxon",
+    top_n: int = 30,
+):
+    """Run DE between tissues within expanded clonotypes and return the filtered subset plus results."""
+    if paired_only:
+        adata = paired_tcr_subset(adata, copy=True)
+    ensure_obs_column(adata, tissue_col, fill_value="Unknown", as_category=True)
+    if expansion_col not in adata.obs.columns:
+        raise KeyError(f"'{expansion_col}' is not present in adata.obs.")
+
+    subset = adata[adata.obs[expansion_col].fillna(False).astype(bool)].copy()
+    observed_tissues = subset.obs[tissue_col].dropna().astype(str).unique().tolist()
+    if tissues is None:
+        tissues = infer_primary_metastasis_tissues(subset, tissue_col=tissue_col)
+    selected_tissues = [str(tissue) for tissue in tissues if str(tissue) in set(observed_tissues)]
+    if len(selected_tissues) < 2:
+        raise ValueError(
+            f"Need at least two tissues for contrast. Requested={list(tissues)}, observed={observed_tissues}"
+        )
+    subset = subset[subset.obs[tissue_col].astype(str).isin(selected_tissues)].copy()
+
+    if reference_tissue is None or case_tissue is None:
+        inferred_reference, inferred_case = infer_primary_metastasis_tissues(subset, tissue_col=tissue_col)
+        reference_tissue = reference_tissue or inferred_reference
+        case_tissue = case_tissue or inferred_case
+
+    counts = subset.obs[tissue_col].astype(str).value_counts()
+    reference_n = int(counts.get(reference_tissue, 0))
+    case_n = int(counts.get(case_tissue, 0))
+    print(
+        f"Expanded-clone tissue contrast: reference={reference_tissue} (n={reference_n}), "
+        f"case={case_tissue} (n={case_n})"
+    )
+    if reference_n < min_cells_per_group or case_n < min_cells_per_group:
+        raise ValueError(
+            f"Not enough expanded-clone cells for tissue contrast: "
+            f"{reference_tissue}={reference_n}, {case_tissue}={case_n}, "
+            f"required>={min_cells_per_group}"
+        )
+
+    key = f"{case_tissue}_vs_{reference_tissue}_expanded_clone_tissue_de"
+    ranked = safe_rank_genes_groups(
+        subset,
+        groupby=tissue_col,
+        groups=[case_tissue],
+        reference=reference_tissue,
+        method=method,
+        min_cells_per_group=min_cells_per_group,
+        key_added=key,
+    )
+    frame = sc.get.rank_genes_groups_df(ranked, group=case_tissue, key=key).head(top_n).copy()
+    frame.insert(0, "case_tissue", case_tissue)
+    frame.insert(1, "reference_tissue", reference_tissue)
+    print(frame[["names", "scores", "logfoldchanges", "pvals_adj"]].to_string(index=False))
+    return ranked, frame
+
+
+def plot_de_barplot(
+    de_results: pd.DataFrame,
+    *,
+    n: int = 10,
+    gene_col: str = "names",
+    lfc_col: str = "logfoldchanges",
+    title: str | None = None,
+):
+    """Plot a bidirectional barplot of the strongest DE genes."""
+    required = {gene_col, lfc_col}
+    if not required.issubset(de_results.columns):
+        raise KeyError(f"de_results must contain columns: {sorted(required)}")
+    working = de_results[[gene_col, lfc_col]].dropna().copy()
+    if working.empty:
+        raise ValueError("de_results has no rows available for plotting.")
+
+    top_case = working.nlargest(n, lfc_col).copy()
+    top_case["direction"] = "case_up"
+    top_reference = working.nsmallest(n, lfc_col).copy()
+    top_reference["direction"] = "reference_up"
+    plot_df = pd.concat([top_reference.iloc[::-1], top_case], ignore_index=True)
+
+    fig_height = max(4.0, 0.45 * len(plot_df))
+    fig, ax = plt.subplots(figsize=(10, fig_height))
+    sns.barplot(
+        data=plot_df,
+        x=lfc_col,
+        y=gene_col,
+        hue="direction",
+        dodge=False,
+        palette={"case_up": "#c43c35", "reference_up": "#2c7fb8"},
+        ax=ax,
+    )
+    ax.axvline(0, color="black", linewidth=1)
+    ax.set_xlabel("log fold change")
+    ax.set_ylabel("Gene")
+    ax.set_title(title or "Top differentially expressed genes")
+    ax.legend(title="")
+    fig.tight_layout()
+    return ax
+
+
+def plot_de_heatmap(
+    adata,
+    genes: Iterable[str],
+    *,
+    tissue_col: str = "tissue",
+    tissues: Iterable[str] | None = None,
+    expansion_col: str = "expanded_clone",
+    paired_only: bool = True,
+    standard_scale: bool = True,
+    title: str | None = None,
+):
+    """Plot a tissue-level heatmap for selected DE genes within expanded clonotypes."""
+    if paired_only:
+        adata = paired_tcr_subset(adata, copy=True)
+    ensure_obs_column(adata, tissue_col, fill_value="Unknown", as_category=True)
+    if expansion_col not in adata.obs.columns:
+        raise KeyError(f"'{expansion_col}' is not present in adata.obs.")
+
+    subset = adata[adata.obs[expansion_col].fillna(False).astype(bool)].copy()
+    if tissues is None:
+        tissues = infer_primary_metastasis_tissues(subset, tissue_col=tissue_col)
+    selected_tissues = [str(tissue) for tissue in tissues]
+    subset = subset[subset.obs[tissue_col].astype(str).isin(selected_tissues)].copy()
+    frame = expression_frame(subset, genes, obs_columns=[tissue_col])
+    mean_expr = frame.groupby(tissue_col, observed=False).mean(numeric_only=True).T
+    mean_expr = mean_expr.loc[:, [col for col in selected_tissues if col in mean_expr.columns]]
+    if mean_expr.empty:
+        raise ValueError("No gene expression values were available for the requested heatmap.")
+
+    if standard_scale:
+        centered = mean_expr.sub(mean_expr.mean(axis=1), axis=0)
+        scaled = centered.div(mean_expr.std(axis=1).replace(0, 1), axis=0)
+        mean_expr = scaled.fillna(0.0)
+
+    fig_width = max(5.0, 2.4 * max(1, mean_expr.shape[1]))
+    fig_height = max(4.0, 0.4 * max(1, mean_expr.shape[0]))
+    fig, ax = plt.subplots(figsize=(fig_width, fig_height))
+    sns.heatmap(mean_expr, cmap="vlag", center=0, linewidths=0.5, cbar_kws={"label": "scaled mean expression"}, ax=ax)
+    ax.set_xlabel(tissue_col)
+    ax.set_ylabel("Gene")
+    ax.set_title(title or "Heatmap of top DE genes across tissues")
+    fig.tight_layout()
+    return mean_expr, ax
+
+
+def summarize_de_pathways(
+    de_results: pd.DataFrame,
+    *,
+    gene_col: str = "names",
+    lfc_col: str = "logfoldchanges",
+    case_label: str = "case",
+    reference_label: str = "reference",
+    n_case: int = 15,
+    n_reference: int = 15,
+) -> dict[str, pd.DataFrame]:
+    """Print a lightweight pathway interpretation using curated T-cell programs."""
+    required = {gene_col, lfc_col}
+    if not required.issubset(de_results.columns):
+        raise KeyError(f"de_results must contain columns: {sorted(required)}")
+
+    working = de_results[[gene_col, lfc_col]].dropna().copy()
+    if working.empty:
+        raise ValueError("de_results has no rows available for pathway interpretation.")
+
+    case_genes = working.nlargest(n_case, lfc_col)[gene_col].astype(str).tolist()
+    reference_genes = working.nsmallest(n_reference, lfc_col)[gene_col].astype(str).tolist()
+
+    def _pathway_frame(genes: list[str]) -> pd.DataFrame:
+        gene_set = {gene.upper() for gene in genes}
+        rows: list[dict[str, object]] = []
+        for pathway, members in CURATED_T_CELL_PROGRAMS.items():
+            overlap = sorted(gene_set & members)
+            if overlap:
+                rows.append(
+                    {
+                        "pathway": pathway,
+                        "overlap_n": len(overlap),
+                        "overlap_genes": ", ".join(overlap),
+                    }
+                )
+        if not rows:
+            return pd.DataFrame(columns=["pathway", "overlap_n", "overlap_genes"])
+        frame = pd.DataFrame(rows)
+        return frame.sort_values(["overlap_n", "pathway"], ascending=[False, True]).reset_index(drop=True)
+
+    case_frame = _pathway_frame(case_genes)
+    reference_frame = _pathway_frame(reference_genes)
+
+    print(f"Curated pathway enrichment for {case_label}-up genes:")
+    if case_frame.empty:
+        print("No curated pathway overlap detected.")
+    else:
+        print(case_frame.to_string(index=False))
+
+    print(f"\nCurated pathway enrichment for {reference_label}-up genes:")
+    if reference_frame.empty:
+        print("No curated pathway overlap detected.")
+    else:
+        print(reference_frame.to_string(index=False))
+
+    return {
+        f"{case_label}_up": case_frame,
+        f"{reference_label}_up": reference_frame,
+    }
+
+
+def plot_tissue_embedding(
+    adata,
+    *,
+    tissue_col: str = "tissue",
+    expansion_col: str = "expanded_clone",
+    tissues: Iterable[str] | None = None,
+    paired_only: bool = True,
+    basis: str = "auto",
+    title: str | None = None,
+):
+    """Plot a tissue-annotated embedding for expanded clonotypes."""
+    if paired_only:
+        adata = paired_tcr_subset(adata, copy=True)
+    ensure_obs_column(adata, tissue_col, fill_value="Unknown", as_category=True)
+    if expansion_col not in adata.obs.columns:
+        raise KeyError(f"'{expansion_col}' is not present in adata.obs.")
+
+    subset = adata[adata.obs[expansion_col].fillna(False).astype(bool)].copy()
+    if tissues is None:
+        tissues = infer_primary_metastasis_tissues(subset, tissue_col=tissue_col)
+    selected_tissues = [str(tissue) for tissue in tissues]
+    subset = subset[subset.obs[tissue_col].astype(str).isin(selected_tissues)].copy()
+    if subset.n_obs == 0:
+        raise ValueError("No cells remained after filtering expanded clonotypes by the requested tissues.")
+
+    chosen_basis = basis.lower()
+    if chosen_basis == "auto":
+        chosen_basis = "umap" if "X_umap" in subset.obsm else "pca"
+
+    if chosen_basis == "umap":
+        if "X_umap" not in subset.obsm:
+            raise ValueError("UMAP coordinates are not available in adata.obsm['X_umap'].")
+        coords = np.asarray(subset.obsm["X_umap"])[:, :2]
+        axis_labels = ("UMAP1", "UMAP2")
+    elif chosen_basis == "pca":
+        if "X_pca" not in subset.obsm:
+            sc.tl.pca(subset, svd_solver="arpack")
+        coords = np.asarray(subset.obsm["X_pca"])[:, :2]
+        axis_labels = ("PC1", "PC2")
+    else:
+        raise ValueError("basis must be one of: auto, umap, pca")
+
+    plot_df = pd.DataFrame(
+        {
+            axis_labels[0]: coords[:, 0],
+            axis_labels[1]: coords[:, 1],
+            tissue_col: subset.obs[tissue_col].astype(str).values,
+        }
+    )
+    fig, ax = plt.subplots(figsize=(8, 6))
+    sns.scatterplot(
+        data=plot_df,
+        x=axis_labels[0],
+        y=axis_labels[1],
+        hue=tissue_col,
+        s=14,
+        linewidth=0,
+        alpha=0.85,
+        ax=ax,
+    )
+    ax.set_title(title or f"{chosen_basis.upper()} of expanded clonotypes by {tissue_col}")
+    fig.tight_layout()
+    return chosen_basis, plot_df, ax
 

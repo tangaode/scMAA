@@ -114,6 +114,17 @@ from scrst_agent.notebook_tools import (
 )
 
 sc.settings.verbosity = 2
+try:
+    from IPython import get_ipython
+    _ip = get_ipython()
+    if _ip is not None:
+        _ip.run_line_magic("matplotlib", "inline")
+except Exception:
+    pass
+try:
+    plt.switch_backend("module://matplotlib_inline.backend_inline")
+except Exception:
+    pass
 sc.settings.set_figure_params(dpi=100, facecolor="white", frameon=False)
 plt.rcParams["figure.figsize"] = (8, 6)
 sns.set_style("whitegrid")

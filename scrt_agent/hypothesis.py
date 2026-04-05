@@ -12,7 +12,7 @@ import litellm
 from pydantic import BaseModel, Field
 
 from .research import ResearchStepUpdate
-from .utils import get_documentation, summarize_notebook_cells
+from .utils import get_documentation, summarize_notebook_cells, truncate_text
 
 litellm.drop_params = True
 
@@ -667,7 +667,9 @@ class HypothesisGenerator:
         approved_plan_items: list[str] | None = None,
         pending_plan_items: list[str] | None = None,
     ) -> AnalysisPlan:
-        notebook_summary = summarize_notebook_cells(notebook_cells)
+        notebook_summary = truncate_text(summarize_notebook_cells(notebook_cells), 12000)
+        trimmed_step_validation_summary = truncate_text(step_validation_summary or "No step validation notes.", 5000)
+        trimmed_past_analyses = truncate_text(past_analyses or "No previous analyses.", 6000)
         prompt = self._read_prompt("next_step.txt").format(
             hypothesis=current_analysis.hypothesis,
             analysis_type=current_analysis.analysis_type,
@@ -689,10 +691,10 @@ class HypothesisGenerator:
             literature_candidates_summary=self.literature_candidates_summary,
             selected_literature_seed="Keep following the literature-guided direction if it still fits the evidence.",
             research_state=research_state_summary or "No research ledger entries yet.",
-            step_validation_summary=step_validation_summary or "No step validation notes.",
+            step_validation_summary=trimmed_step_validation_summary,
             approved_plan_items="\n".join(f"- {item}" for item in (approved_plan_items or current_analysis.analysis_plan)) or "No approved plan items.",
             pending_plan_items="\n".join(f"- {item}" for item in (pending_plan_items or [])) or "None.",
-            past_analyses=past_analyses or "No previous analyses.",
+            past_analyses=trimmed_past_analyses,
             notebook_summary=notebook_summary or "Notebook is currently empty.",
             num_steps_left=num_steps_left,
         )

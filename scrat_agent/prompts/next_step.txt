@@ -8,6 +8,11 @@ Requirements:
 - Prefer steps that distinguish competing explanations.
 - Keep the next code cell executable and limited in scope.
 - If RNA and ATAC disagree, make that discrepancy explicit instead of smoothing it over.
+- The approved plan is a binding execution contract. Any approved plan items that are still pending must remain visible and must be completed before the analysis is considered finished.
+- If a pending approved-plan item is figure-oriented, the next step must generate a visible notebook figure or explicitly save the figure to file; plotting code without rendered or saved output does not count as completion.
+- If a pending approved-plan item asks for a heatmap or barplot, do that plot in this step instead of only preparing inputs for it.
+- The `first_step_code` must directly execute the pending approved-plan item it claims to address; mentioning heatmaps, barplots, or pathway analysis only in the rationale or summary is insufficient.
+- Extra analyses are allowed only if they do not replace the pending approved plan items.
 
 Coding guidelines:
 {CODING_GUIDELINES}
@@ -44,6 +49,12 @@ Current code:
 
 Current code description:
 {current_code_description}
+
+Approved plan contract:
+{approved_plan_items}
+
+Pending required plan items:
+{pending_plan_items}
 
 Step validation summary:
 {step_validation_summary}
