@@ -28,6 +28,8 @@ How to think:
 - Extra analyses are allowed only if they do not replace the pending approved plan items.
 - Do not treat narrative markdown or text-only panels as figure output. Figure-oriented steps must produce data-driven visual panels.
 - For hypothesis-focused figures, the first panel must be a biological data visualization, not a text summary of the hypothesis or plan.
+- If the plan names a specific cell subset, tissue contrast, or marker set, those exact objects must remain explicit in the generated figures.
+- Supplemental plots are allowed, but plan-mandated evidence panels must occupy the primary figure positions before any extra context panels.
 
 Current hypothesis:
 {hypothesis}
