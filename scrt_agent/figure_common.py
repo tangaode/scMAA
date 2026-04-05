@@ -204,12 +204,15 @@ def plot_categorical_embedding(
     basis: str = "X_umap",
     label_points: bool = True,
 ) -> None:
-    if basis not in adata.obsm:
+    fallback_basis = basis
+    if fallback_basis not in adata.obsm and basis == "X_umap" and "X_pca" in adata.obsm:
+        fallback_basis = "X_pca"
+    if fallback_basis not in adata.obsm:
         ax.text(0.5, 0.5, f"No {basis}", ha="center", va="center", transform=ax.transAxes)
         ax.set_title(title)
         ax.axis("off")
         return
-    coords = adata.obsm[basis]
+    coords = adata.obsm[fallback_basis]
     frame = pd.DataFrame(coords[:, :2], columns=["x", "y"], index=adata.obs_names)
     if color in adata.obs.columns:
         labels = adata.obs[color].astype(str).fillna("Unknown")
@@ -228,8 +231,12 @@ def plot_categorical_embedding(
     elif len(categories) <= 18:
         ax.legend(loc="best", fontsize=7, frameon=False)
     ax.set_title(title, fontsize=11)
-    ax.set_xlabel("UMAP1")
-    ax.set_ylabel("UMAP2")
+    if fallback_basis == "X_umap":
+        ax.set_xlabel("UMAP1")
+        ax.set_ylabel("UMAP2")
+    else:
+        ax.set_xlabel("PC1")
+        ax.set_ylabel("PC2")
 
 
 def rank_marker_matrix(
