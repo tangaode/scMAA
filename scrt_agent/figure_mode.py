@@ -47,7 +47,7 @@ class FigureResult:
 
 
 T_CELL_HINTS = ("t cell", "t cells", "cd8", "cd4", "treg", "regulatory t", "cytotoxic t")
-PSEUDOTIME_HINTS = ("pseudotime", "trajectory", "拟时序", "伪时序", "轨迹")
+PSEUDOTIME_HINTS = ("pseudotime", "trajectory", "dpt", "pseudotemporal", "trajectory analysis")
 DEFAULT_FOCUS_GENES = [
     "TCF7",
     "IL7R",
@@ -62,6 +62,79 @@ DEFAULT_FOCUS_GENES = [
     "GZMB",
     "XBP1",
 ]
+
+
+def _detect_plan_focus(result_context: dict[str, str], tokens: tuple[str, ...]) -> bool:
+    joined = "\n".join(
+        [
+            result_context.get("executed_hypothesis", ""),
+            result_context.get("approved_plan_text", ""),
+            result_context.get("approved_priority_question", ""),
+            result_context.get("approved_plan_steps", ""),
+            result_context.get("approved_strategy_feedback", ""),
+            result_context.get("run_summary", ""),
+        ]
+    ).lower()
+    return any(token in joined for token in tokens)
+
+
+def _tcr_diversity_by_sample_tissue(adata: ad.AnnData, tissue_col: str) -> pd.DataFrame:
+    if adata.n_obs == 0 or "clonotype_id" not in adata.obs.columns:
+        return pd.DataFrame()
+    sample_col = (
+        "sample_id"
+        if "sample_id" in adata.obs.columns
+        else ("sample_key" if "sample_key" in adata.obs.columns else None)
+    )
+    if sample_col is None:
+        return pd.DataFrame()
+    frame = adata.obs[[sample_col, tissue_col, "clonotype_id"]].dropna().copy()
+    if frame.empty:
+        return pd.DataFrame()
+    frame["clonotype_id"] = frame["clonotype_id"].astype(str)
+    frame = frame.loc[frame["clonotype_id"] != "nan"]
+    if frame.empty:
+        return pd.DataFrame()
+    records: list[dict[str, object]] = []
+    for (sample_value, tissue_value), sample_frame in frame.groupby([sample_col, tissue_col], observed=False):
+        clone_counts = sample_frame["clonotype_id"].value_counts()
+        if clone_counts.sum() <= 0:
+            continue
+        probs = clone_counts / clone_counts.sum()
+        shannon = float(-(probs * np.log(probs + 1e-12)).sum())
+        records.append(
+            {
+                "sample": str(sample_value),
+                tissue_col: str(tissue_value),
+                "clonotype_diversity": shannon,
+                "paired_cells": int(len(sample_frame)),
+            }
+        )
+    if not records:
+        return pd.DataFrame()
+    return pd.DataFrame.from_records(records)
+
+
+def _plot_tcr_diversity_by_tissue(ax, data: pd.DataFrame, tissue_col: str) -> None:
+    if data.empty:
+        ax.text(0.5, 0.5, "No diversity data", ha="center", va="center", transform=ax.transAxes)
+        ax.set_title("TCR diversity by tissue")
+        ax.axis("off")
+        return
+    sns.boxplot(data=data, x=tissue_col, y="clonotype_diversity", ax=ax, color="#9ecae1", fliersize=1.5)
+    sns.stripplot(
+        data=data,
+        x=tissue_col,
+        y="clonotype_diversity",
+        ax=ax,
+        color="#08519c",
+        alpha=0.45,
+        size=4,
+    )
+    ax.set_title("TCR diversity by tissue", fontsize=11)
+    ax.set_xlabel("")
+    ax.set_ylabel("Shannon diversity")
+    ax.tick_params(axis="x", rotation=35)
 
 
 def _normalize_barcode(value: object) -> str:
@@ -436,6 +509,7 @@ def build_publication_figure(
     expansion_heatmap = _expanded_fraction_table(paired, group_col, tissue_col) if paired.n_obs else pd.DataFrame()
     clone_sharing = _tissue_clonotype_sharing(paired, tissue_col=tissue_col)
     v_gene_heatmap = _v_gene_usage_heatmap(paired, tissue_col=tissue_col)
+    diversity_by_tissue = _tcr_diversity_by_sample_tissue(paired, tissue_col=tissue_col)
 
     summary_fig = plt.figure(figsize=(18, 24))
     gs = GridSpec(4, 2, figure=summary_fig, hspace=0.42, wspace=0.24)
@@ -461,7 +535,10 @@ def build_publication_figure(
     panel_label(ax_e, "e")
 
     ax_f = summary_fig.add_subplot(gs[2, 1])
-    _plot_heatmap(ax_f, clone_sharing, "Clonotype sharing across tissues", cbar_label="Jaccard overlap", cmap="crest")
+    if _detect_plan_focus(result_context, ("diversity", "metastasis", "tcr")):
+        _plot_tcr_diversity_by_tissue(ax_f, diversity_by_tissue, tissue_col)
+    else:
+        _plot_heatmap(ax_f, clone_sharing, "Clonotype sharing across tissues", cbar_label="Jaccard overlap", cmap="crest")
     panel_label(ax_f, "f")
 
     ax_g = summary_fig.add_subplot(gs[3, 0])
@@ -507,15 +584,26 @@ def build_publication_figure(
 
     ax_h2 = hyp_fig.add_subplot(hyp_gs[0, 1])
     if pseudotime_subset is not None and "dpt_pseudotime" in pseudotime_subset.obs.columns:
-        sc.pl.umap(
-            pseudotime_subset,
-            color="dpt_pseudotime",
-            ax=ax_h2,
-            show=False,
-            frameon=False,
-            title="Focused T-cell pseudotime",
-            color_map="viridis",
+        basis = "X_umap" if "X_umap" in pseudotime_subset.obsm else "X_pca"
+        coords = pseudotime_subset.obsm[basis][:, :2]
+        values = pseudotime_subset.obs["dpt_pseudotime"].astype(float).to_numpy()
+        scatter = ax_h2.scatter(
+            coords[:, 0],
+            coords[:, 1],
+            c=values,
+            cmap="viridis",
+            s=14,
+            alpha=0.85,
+            linewidths=0,
         )
+        cbar = hyp_fig.colorbar(scatter, ax=ax_h2, fraction=0.046, pad=0.04)
+        cbar.set_label("dpt_pseudotime")
+        ax_h2.set_title(
+            f"Focused T-cell { 'UMAP' if basis == 'X_umap' else 'PCA'} pseudotime ordering",
+            fontsize=11,
+        )
+        ax_h2.set_xlabel("UMAP1" if basis == "X_umap" else "PC1")
+        ax_h2.set_ylabel("UMAP2" if basis == "X_umap" else "PC2")
     elif focus_genes:
         sc.pl.umap(
             focus_subset if focus_subset.n_obs else adata,
