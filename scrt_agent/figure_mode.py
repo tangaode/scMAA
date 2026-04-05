@@ -24,7 +24,6 @@ from scrt_agent.figure_common import (
     extract_result_genes,
     panel_label,
     plot_categorical_embedding,
-    plot_text_panel,
     read_run_result_context,
     save_figure_bundle,
 )
@@ -134,6 +133,32 @@ def _plot_tcr_diversity_by_tissue(ax, data: pd.DataFrame, tissue_col: str) -> No
     ax.set_title("TCR diversity by tissue", fontsize=11)
     ax.set_xlabel("")
     ax.set_ylabel("Shannon diversity")
+    ax.tick_params(axis="x", rotation=35)
+
+
+def _plot_group_fraction(ax, adata: ad.AnnData, tissue_col: str, value_col: str, title: str) -> None:
+    if adata.n_obs == 0 or value_col not in adata.obs.columns:
+        ax.text(0.5, 0.5, "No data", ha="center", va="center", transform=ax.transAxes)
+        ax.set_title(title)
+        ax.axis("off")
+        return
+    frame = adata.obs[[tissue_col, value_col]].copy()
+    frame[value_col] = frame[value_col].fillna(False).astype(bool)
+    summary = (
+        frame.groupby(tissue_col, observed=False)[value_col]
+        .mean()
+        .sort_values(ascending=False)
+        .reset_index()
+    )
+    if summary.empty:
+        ax.text(0.5, 0.5, "No data", ha="center", va="center", transform=ax.transAxes)
+        ax.set_title(title)
+        ax.axis("off")
+        return
+    sns.barplot(data=summary, x=tissue_col, y=value_col, ax=ax, color="#6baed6")
+    ax.set_title(title, fontsize=11)
+    ax.set_xlabel("")
+    ax.set_ylabel("Fraction")
     ax.tick_params(axis="x", rotation=35)
 
 
@@ -407,12 +432,26 @@ def _pseudotime_bin_table(subset: ad.AnnData, genes: list[str], tissue_col: str)
     if "dpt_pseudotime" not in subset.obs.columns or not genes:
         return pd.DataFrame(), pd.DataFrame()
     work = subset.copy()
-    work.obs["pseudotime_bin"] = pd.qcut(
+    n_bins = min(5, max(2, work.n_obs // 150))
+    bin_codes = pd.qcut(
         work.obs["dpt_pseudotime"].rank(method="first"),
-        q=min(5, max(2, work.n_obs // 150)),
+        q=n_bins,
         labels=False,
         duplicates="drop",
-    ).astype(str)
+    )
+    unique_codes = sorted(pd.Series(bin_codes).dropna().astype(int).unique().tolist())
+    if not unique_codes:
+        return pd.DataFrame(), pd.DataFrame()
+    labels = []
+    for idx, code in enumerate(unique_codes):
+        if idx == 0:
+            labels.append("Early")
+        elif idx == len(unique_codes) - 1:
+            labels.append("Late")
+        else:
+            labels.append(f"Mid-{idx}")
+    code_to_label = {code: label for code, label in zip(unique_codes, labels)}
+    work.obs["pseudotime_bin"] = pd.Series(bin_codes, index=work.obs.index).map(code_to_label).astype(str)
     expr = expression_frame(work, genes, obs_columns=["pseudotime_bin"]).groupby("pseudotime_bin", observed=False).mean()
     if "expanded_clone" in work.obs.columns:
         clone_by_bin = (
@@ -422,6 +461,10 @@ def _pseudotime_bin_table(subset: ad.AnnData, genes: list[str], tissue_col: str)
         )
     else:
         clone_by_bin = pd.DataFrame()
+    ordered_labels = [label for label in labels if label in expr.index]
+    expr = expr.loc[ordered_labels]
+    if not clone_by_bin.empty:
+        clone_by_bin = clone_by_bin.reindex(ordered_labels)
     return expr.T, clone_by_bin
 
 
@@ -561,22 +604,16 @@ def build_publication_figure(
     focus_de = _focused_de_heatmap(focus_subset, tissue_col=tissue_col) if focus_subset.n_obs else pd.DataFrame()
     focus_clone = _expanded_fraction_table(focus_subset, tissue_col, group_col) if focus_subset.n_obs else pd.DataFrame()
 
-    hypothesis_text_block = "\n\n".join(
-        [
-            f"Executed hypothesis:\n{hypothesis_text or 'No executed hypothesis found.'}",
-            f"Approved priority question:\n{approved_priority or 'No approved priority question found.'}",
-            (
-                "Approved plan steps:\n"
-                + (result_context.get("approved_plan_steps", "No approved plan steps found.") or "No approved plan steps found.")
-            ),
-        ]
-    )
-
     hyp_fig = plt.figure(figsize=(18, 22))
     hyp_gs = GridSpec(3, 2, figure=hyp_fig, hspace=0.36, wspace=0.24)
 
     ax_h1 = hyp_fig.add_subplot(hyp_gs[0, 0])
-    plot_text_panel(ax_h1, "Plan-aligned hypothesis context", hypothesis_text_block)
+    plot_categorical_embedding(
+        ax_h1,
+        focus_subset if focus_subset.n_obs else adata,
+        color=tissue_col if tissue_col in (focus_subset.obs.columns if focus_subset.n_obs else adata.obs.columns) else group_col,
+        title="Focused T-cell embedding by tissue context",
+    )
     panel_label(ax_h1, "a")
 
     ax_h2 = hyp_fig.add_subplot(hyp_gs[0, 1])
