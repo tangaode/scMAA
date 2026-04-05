@@ -535,10 +535,7 @@ def build_publication_figure(
     panel_label(ax_e, "e")
 
     ax_f = summary_fig.add_subplot(gs[2, 1])
-    if _detect_plan_focus(result_context, ("diversity", "metastasis", "tcr")):
-        _plot_tcr_diversity_by_tissue(ax_f, diversity_by_tissue, tissue_col)
-    else:
-        _plot_heatmap(ax_f, clone_sharing, "Clonotype sharing across tissues", cbar_label="Jaccard overlap", cmap="crest")
+    _plot_heatmap(ax_f, clone_sharing, "Clonotype sharing across tissues", cbar_label="Jaccard overlap", cmap="crest")
     panel_label(ax_f, "f")
 
     ax_g = summary_fig.add_subplot(gs[3, 0])
@@ -583,27 +580,8 @@ def build_publication_figure(
     panel_label(ax_h1, "a")
 
     ax_h2 = hyp_fig.add_subplot(hyp_gs[0, 1])
-    if pseudotime_subset is not None and "dpt_pseudotime" in pseudotime_subset.obs.columns:
-        basis = "X_umap" if "X_umap" in pseudotime_subset.obsm else "X_pca"
-        coords = pseudotime_subset.obsm[basis][:, :2]
-        values = pseudotime_subset.obs["dpt_pseudotime"].astype(float).to_numpy()
-        scatter = ax_h2.scatter(
-            coords[:, 0],
-            coords[:, 1],
-            c=values,
-            cmap="viridis",
-            s=14,
-            alpha=0.85,
-            linewidths=0,
-        )
-        cbar = hyp_fig.colorbar(scatter, ax=ax_h2, fraction=0.046, pad=0.04)
-        cbar.set_label("dpt_pseudotime")
-        ax_h2.set_title(
-            f"Focused T-cell { 'UMAP' if basis == 'X_umap' else 'PCA'} pseudotime ordering",
-            fontsize=11,
-        )
-        ax_h2.set_xlabel("UMAP1" if basis == "X_umap" else "PC1")
-        ax_h2.set_ylabel("UMAP2" if basis == "X_umap" else "PC2")
+    if _detect_plan_focus(result_context, ("diversity", "metastasis", "immune escape")) and not diversity_by_tissue.empty:
+        _plot_tcr_diversity_by_tissue(ax_h2, diversity_by_tissue, tissue_col)
     elif focus_genes:
         sc.pl.umap(
             focus_subset if focus_subset.n_obs else adata,
@@ -618,34 +596,51 @@ def build_publication_figure(
     panel_label(ax_h2, "b")
 
     ax_h3 = hyp_fig.add_subplot(hyp_gs[1, 0])
-    if pseudotime_subset is not None and "dpt_pseudotime" in pseudotime_subset.obs.columns:
-        frame = pseudotime_subset.obs[[tissue_col, "dpt_pseudotime"]].copy()
-        sns.boxplot(data=frame, x=tissue_col, y="dpt_pseudotime", ax=ax_h3, color="#bcbddc", fliersize=1.5)
-        ax_h3.set_title("Pseudotime distribution by tissue", fontsize=11)
-        ax_h3.set_xlabel("")
-        ax_h3.tick_params(axis="x", rotation=35)
+    if _detect_plan_focus(result_context, ("diversity", "metastasis", "immune escape")) and paired.n_obs:
+        _plot_clone_size_distribution(ax_h3, paired, tissue_col)
     else:
         _plot_heatmap(ax_h3, focus_clone, "Expanded clone support in focused subset", cbar_label="expanded fraction")
     panel_label(ax_h3, "c")
 
     ax_h4 = hyp_fig.add_subplot(hyp_gs[1, 1])
-    if not trend_heatmap.empty:
-        _plot_heatmap(ax_h4, trend_heatmap, "Marker dynamics along pseudotime", cbar_label="mean RNA", cmap="rocket")
-    else:
+    if not focus_de.empty:
         _plot_heatmap(ax_h4, focus_de, "Focused differential-expression support", cbar_label="log fold change", cmap="vlag")
+    elif not trend_heatmap.empty:
+        _plot_heatmap(ax_h4, trend_heatmap, "Marker dynamics along pseudotime", cbar_label="mean RNA", cmap="rocket")
     panel_label(ax_h4, "d")
 
     ax_h5 = hyp_fig.add_subplot(hyp_gs[2, 0])
-    if not clone_by_bin.empty:
-        _plot_heatmap(ax_h5, clone_by_bin.T, "Expanded clone fraction across pseudotime bins", cbar_label="expanded fraction", cmap="crest")
+    if pseudotime_subset is not None and "dpt_pseudotime" in pseudotime_subset.obs.columns:
+        basis = "X_umap" if "X_umap" in pseudotime_subset.obsm else "X_pca"
+        coords = pseudotime_subset.obsm[basis][:, :2]
+        values = pseudotime_subset.obs["dpt_pseudotime"].astype(float).to_numpy()
+        scatter = ax_h5.scatter(
+            coords[:, 0],
+            coords[:, 1],
+            c=values,
+            cmap="viridis",
+            s=14,
+            alpha=0.85,
+            linewidths=0,
+        )
+        cbar = hyp_fig.colorbar(scatter, ax=ax_h5, fraction=0.046, pad=0.04)
+        cbar.set_label("dpt_pseudotime")
+        ax_h5.set_title(
+            f"Focused T-cell { 'UMAP' if basis == 'X_umap' else 'PCA'} pseudotime ordering",
+            fontsize=11,
+        )
+        ax_h5.set_xlabel("UMAP1" if basis == "X_umap" else "PC1")
+        ax_h5.set_ylabel("UMAP2" if basis == "X_umap" else "PC2")
     else:
         clone_sharing_focus = _tissue_clonotype_sharing(focus_subset, tissue_col=tissue_col)
         _plot_heatmap(ax_h5, clone_sharing_focus, "Focused clonotype sharing", cbar_label="Jaccard overlap", cmap="crest")
     panel_label(ax_h5, "e")
 
     ax_h6 = hyp_fig.add_subplot(hyp_gs[2, 1])
-    if not focus_de.empty:
-        _plot_heatmap(ax_h6, focus_de, "Plan-aligned differential-expression heatmap", cbar_label="log fold change", cmap="vlag")
+    if not clone_by_bin.empty:
+        _plot_heatmap(ax_h6, clone_by_bin.T, "Expanded clone fraction across pseudotime bins", cbar_label="expanded fraction", cmap="crest")
+    elif not trend_heatmap.empty:
+        _plot_heatmap(ax_h6, trend_heatmap, "Marker dynamics along pseudotime", cbar_label="mean RNA", cmap="rocket")
     else:
         focus_expr = pd.DataFrame()
         if focus_genes:
