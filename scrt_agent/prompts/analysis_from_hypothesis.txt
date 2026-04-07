@@ -21,11 +21,17 @@ Requirements:
 - Do not repeat past analyses.
 - This scRNA + scTCR workflow should prefer `joint` analysis when RNA-TCR overlap is usable.
 - Prefer `joint` plans unless the first evidence step truly does not need clonotype or repertoire metadata.
+- Treat the fixed baseline T-cell/clonotype analysis as already completed evidence.
+- Make the first real test build directly on the baseline results, especially T-cell subsets that are newly emerged, relatively under-studied in this disease, tissue-skewed, or clonally expanded.
+- When possible, move from phenotype to mechanism: identify the relevant subset, compare its clone distribution across tissues, then prioritize tumor-enriched or metastasis-enriched genes that could represent new functional drivers.
 - Choose a first step that produces real evidence, not generic housekeeping.
 - Prefer notebook helper functions over ad hoc category wrangling or repeated DE boilerplate.
 - Treat user strategy feedback as a high-priority planning constraint.
 - If the user asks to compare certain tissues, cell states, clones, or markers first, make that visible in the first step and in the analysis plan.
 - If the user narrows the scope, do not silently broaden it again.
+- `first_step_code` must directly operationalize the seeded hypothesis rather than drifting to a generic nearby analysis.
+- The subset, tissue contrast, clone behavior, and marker/gene focus named in the hypothesis or priority question should remain explicit in `first_step_code` when they are needed for the first test.
+- Do not let the prose plan promise one biological question while the code executes a different one.
 
 Coding guidelines:
 {CODING_GUIDELINES}

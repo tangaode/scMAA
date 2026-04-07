@@ -8,6 +8,8 @@ from pathlib import Path
 import re
 from typing import Iterable
 
+import litellm
+
 from .deepresearch import DeepResearcher
 from .execution import LegacyNotebookExecutor
 from .figure_mode import FigureResult, build_publication_figure
@@ -193,6 +195,60 @@ def _candidate_key(candidate) -> str:
     return f"{_normalize_candidate_text(candidate.title)}||{_normalize_candidate_text(candidate.hypothesis)}"
 
 
+def _candidate_theme_key(candidate) -> str:
+    text = f"{getattr(candidate, 'title', '')} {getattr(candidate, 'hypothesis', '')}".lower()
+    theme_map = {
+        "treg": ("regulatory t", "treg"),
+        "cytotoxic_t": ("cytotoxic t", "cd8", "exhausted cd8"),
+        "effector_memory_t": ("effector/memory t", "effector memory", "memory t"),
+        "mast_cell": ("mast cell",),
+        "nk_cell": ("nk cell",),
+        "trajectory": ("trajectory", "pseudotime", "lineage"),
+        "clonotype": ("clonotype", "clone", "tcr repertoire", "clone type"),
+        "checkpoint": ("checkpoint", "pd-1", "ctla-4", "immune checkpoint"),
+        "exhaustion": ("exhaust", "pdcd1", "lag3", "havcr2", "tigit", "tox"),
+        "trafficking": ("traffic", "migration", "homing", "cxcr", "ccr"),
+        "stress": ("xbp1", "stress", "unfolded protein", "er stress"),
+        "activation": ("activation", "effector", "cytotoxic", "ifng", "granzyme"),
+    }
+    for label, keywords in theme_map.items():
+        if any(keyword in text for keyword in keywords):
+            return label
+    return re.sub(r"\s+", " ", text).strip()[:80]
+
+
+def _candidate_has_mechanistic_direction(candidate) -> bool:
+    text = " ".join(
+        [
+            getattr(candidate, "title", ""),
+            getattr(candidate, "hypothesis", ""),
+            getattr(candidate, "rationale", ""),
+            getattr(candidate, "first_test", ""),
+        ]
+    ).lower()
+    mechanism_tokens = (
+        "xbp1",
+        "pdcd1",
+        "lag3",
+        "havcr2",
+        "tigit",
+        "tox",
+        "cxcr",
+        "ccr",
+        "pathway",
+        "stress",
+        "checkpoint",
+        "exhaust",
+        "traffick",
+        "migration",
+        "interferon",
+        "metabolic",
+        "signaling",
+        "gene",
+    )
+    return any(token in text for token in mechanism_tokens)
+
+
 def _merge_distinct_candidates(existing: list, new_items: list, limit: int) -> list:
     merged = list(existing)
     seen = {_candidate_key(item) for item in merged}
@@ -202,6 +258,23 @@ def _merge_distinct_candidates(existing: list, new_items: list, limit: int) -> l
             continue
         merged.append(item)
         seen.add(key)
+        if len(merged) >= limit:
+            break
+    return merged
+
+
+def _merge_theme_distinct_candidates(existing: list, new_items: list, limit: int) -> list:
+    merged = list(existing)
+    seen_keys = {_candidate_key(item) for item in merged}
+    seen_themes = {_candidate_theme_key(item) for item in merged}
+    for item in new_items:
+        key = _candidate_key(item)
+        theme = _candidate_theme_key(item)
+        if not key or key in seen_keys or theme in seen_themes:
+            continue
+        merged.append(item)
+        seen_keys.add(key)
+        seen_themes.add(theme)
         if len(merged) >= limit:
             break
     return merged
@@ -278,6 +351,12 @@ class ScRTAgent:
         self.joint_summary = self._summarize_joint_data(self.rna_h5ad_path, self.tcr_path)
         self.dataset_validation = DatasetValidator().inspect_inputs(self.rna_h5ad_path, self.tcr_path)
         self.validation_summary = self.dataset_validation.to_prompt_text()
+        self.standard_baseline_summary = self._summarize_standard_baseline(self.rna_h5ad_path, self.tcr_path)
+        (self.output_dir / "standard_baseline_summary.txt").write_text(self.standard_baseline_summary, encoding="utf-8")
+        self.baseline_planning_context = self._extract_baseline_planning_context(self.standard_baseline_summary)
+        (self.output_dir / "baseline_planning_context.txt").write_text(self.baseline_planning_context, encoding="utf-8")
+        self.baseline_tcell_labels = self._extract_baseline_tcell_labels(self.standard_baseline_summary)
+        (self.output_dir / "baseline_tcell_labels.txt").write_text("\n".join(self.baseline_tcell_labels) + ("\n" if self.baseline_tcell_labels else ""), encoding="utf-8")
         self.literature_documents = self._load_literature_documents()
         self.literature_sources = "\n".join(str(doc.path) for doc in self.literature_documents) or "No local literature files."
         self.literature_summary = self._summarize_literature()
@@ -302,6 +381,9 @@ class ScRTAgent:
             tcr_summary=self.tcr_summary,
             joint_summary=self.joint_summary,
             validation_summary=self.validation_summary,
+            standard_baseline_summary=self.standard_baseline_summary,
+            baseline_planning_context=self.baseline_planning_context,
+            baseline_tcell_labels=self.baseline_tcell_labels,
             context_summary=self.context_summary,
             literature_summary=self.literature_summary,
             literature_candidates_summary=self.literature_hypothesis_candidates,
@@ -324,6 +406,7 @@ class ScRTAgent:
             tcr_summary=self.tcr_summary,
             joint_summary=self.joint_summary,
             validation_summary=self.validation_summary,
+            standard_baseline_summary=self.standard_baseline_summary,
             context_summary=self.context_summary,
             logger=self.logger,
             rna_h5ad_path=self.rna_h5ad_path,
@@ -365,16 +448,22 @@ class ScRTAgent:
         menu = _generate_menu(effective_feedback)
         joint_floor = max(3, target_count // 2 + 1)
         joint_light = sum(item.preferred_analysis_type == "joint" for item in menu.candidates) < joint_floor
+        theme_keys = [_candidate_theme_key(item) for item in menu.candidates]
+        unique_theme_count = len(set(theme_keys))
+        mechanism_count = sum(_candidate_has_mechanistic_direction(item) for item in menu.candidates)
         needs_retry = (
             len(menu.candidates) != target_count
             or any(not item.first_test.strip() for item in menu.candidates)
             or (joint_light and not ("rna_only" in (user_feedback or "").lower()))
+            or unique_theme_count < max(3, min(target_count, 4))
+            or mechanism_count < min(2, target_count)
         )
         if needs_retry:
             retry_feedback = (
                 effective_feedback
                 + "\n\nThe previous menu did not satisfy the count or modality-balance requirements. "
-                  "Retry and satisfy every hard constraint exactly."
+                  "Retry and satisfy every hard constraint exactly. "
+                  "Avoid near-duplicate themes and include at least two candidates with explicit mechanistic directions."
             )
             menu = _generate_menu(retry_feedback)
 
@@ -398,6 +487,41 @@ class ScRTAgent:
             top_up_menu = _generate_menu(top_up_feedback)
             merged_candidates = _merge_distinct_candidates(merged_candidates, top_up_menu.candidates, target_count)
 
+        required_theme_floor = max(3, min(target_count, 4))
+        theme_diversify_attempt = 0
+        while len({_candidate_theme_key(item) for item in merged_candidates}) < required_theme_floor and theme_diversify_attempt < 3:
+            theme_diversify_attempt += 1
+            unique_by_theme: list = []
+            seen_themes: set[str] = set()
+            for item in merged_candidates:
+                theme = _candidate_theme_key(item)
+                if theme in seen_themes:
+                    continue
+                unique_by_theme.append(item)
+                seen_themes.add(theme)
+            banned_themes = sorted(seen_themes)
+            diversify_feedback = (
+                effective_feedback
+                + "\n\nTheme diversification request:\n"
+                + f"Keep these existing themes unchanged: {', '.join(banned_themes)}.\n"
+                + f"Add {target_count - len(unique_by_theme)} new candidates with clearly different biological themes.\n"
+                + "Do not return trajectory-only or clonotype-overlap-only duplicates.\n"
+                + "Prefer mechanistic directions involving concrete genes, pathways, trafficking programs, stress programs, or exhaustion regulators."
+            )
+            diversify_menu = _generate_menu(diversify_feedback)
+            merged_candidates = _merge_theme_distinct_candidates(unique_by_theme, diversify_menu.candidates, target_count)
+
+        if len(merged_candidates) < target_count:
+            final_fill_feedback = (
+                effective_feedback
+                + "\n\nFinal fill request:\n"
+                + f"The menu currently has {len(merged_candidates)} candidates but needs exactly {target_count}.\n"
+                + "Keep all existing candidates unchanged and add only the missing number of new candidates.\n"
+                + "Prefer themes not already represented; if that is impossible, fill with the strongest remaining mechanistic candidates."
+            )
+            final_fill_menu = _generate_menu(final_fill_feedback)
+            merged_candidates = _merge_distinct_candidates(merged_candidates, final_fill_menu.candidates, target_count)
+
         if len(merged_candidates) < target_count:
             self.logger.warning(
                 "Candidate menu remained undersized after top-up attempts. "
@@ -407,10 +531,22 @@ class ScRTAgent:
             merged_candidates = merged_candidates[:target_count]
 
         joint_count = sum(item.preferred_analysis_type == "joint" for item in merged_candidates)
+        mechanism_count = sum(_candidate_has_mechanistic_direction(item) for item in merged_candidates)
+        unique_theme_count = len({_candidate_theme_key(item) for item in merged_candidates})
         if joint_count < joint_floor and target_count > 1:
             self.logger.warning(
                 "Candidate menu met count after top-up but joint coverage is still light. "
                 f"joint={joint_count}, target_floor={joint_floor}."
+            )
+        if unique_theme_count < max(3, min(target_count, 4)):
+            self.logger.warning(
+                "Candidate menu still contains repeated themes after top-up. "
+                f"unique_themes={unique_theme_count}, candidates={len(merged_candidates)}."
+            )
+        if mechanism_count < min(2, target_count):
+            self.logger.warning(
+                "Candidate menu still lacks enough mechanistic candidates after top-up. "
+                f"mechanistic={mechanism_count}, candidates={len(merged_candidates)}."
             )
 
         research_focus = menu.research_focus if getattr(menu, "research_focus", "").strip() else "Ranked integrated scRNA + scTCR candidate menu."
@@ -599,6 +735,9 @@ class ScRTAgent:
             tcr_path=self.tcr_path,
             output_dir=figure_dir,
             figure_name=figure_name,
+            hypothesis_model=self.hypothesis_model,
+            baseline_summary_text=self.standard_baseline_summary,
+            prompt_dir=self.prompt_dir,
         )
         self.logger.info(f"Publication figure generated at {result.png_path}")
         return result
@@ -910,6 +1049,269 @@ class ScRTAgent:
         finally:
             if getattr(adata, "file", None) is not None:
                 adata.file.close()
+
+    def _summarize_standard_baseline(self, rna_h5ad_path: str, tcr_path: str) -> str:
+        import anndata as ad
+        import pandas as pd
+        from .notebook_tools import (
+            assign_clone_type_labels,
+            is_t_cell_like_label,
+            paired_tcr_subset,
+            recluster_and_annotate_t_cells,
+        )
+
+        adata = ad.read_h5ad(rna_h5ad_path, backed="r")
+        try:
+            obs = adata.obs.copy()
+            if "barcode" not in obs.columns:
+                obs["barcode"] = [str(idx) for idx in adata.obs_names]
+            obs["barcode_exact"] = obs["barcode"].astype(str).map(normalize_barcode)
+            obs["barcode_core"] = obs["barcode"].astype(str).map(barcode_core)
+
+            group_col = next(
+                (
+                    column
+                    for column in ("cell_type", "cluster_cell_type", "annotation", "leiden")
+                    if column in obs.columns
+                ),
+                None,
+            )
+            tissue_col = next(
+                (
+                    column
+                    for column in ("tissue", "sample_key", "sample_id")
+                    if column in obs.columns
+                ),
+                None,
+            )
+            sample_col = infer_sample_column(obs.columns)
+
+            lines = [
+                "Mandatory baseline analysis before hypothesis generation:",
+                "- scRNA UMAP with current annotations.",
+                "- Global cell-type proportion bar plot across tissues/groups.",
+                "- T-cell-only reclustering/annotation UMAP.",
+                "- T-cell subtype proportion bar plot across tissues/groups.",
+                "- T-cell clonotype/cloneType UMAP.",
+                "- cloneType composition bar plot across T-cell subtypes.",
+            ]
+            if group_col is None or tissue_col is None:
+                lines.append("Baseline warning: RNA metadata does not expose both annotation and tissue columns clearly.")
+                return "\n".join(lines)
+
+            lines.extend(
+                [
+                    f"Baseline annotation column: {group_col}",
+                    f"Baseline tissue column: {tissue_col}",
+                    f"RNA has UMAP coordinates: {'X_umap' in adata.obsm}",
+                    "Top global cell types: " + _top_counts(obs[group_col].astype(str), limit=10),
+                    "Top tissue labels: " + _top_counts(obs[tissue_col].astype(str), limit=10),
+                ]
+            )
+
+            celltype_by_tissue = pd.crosstab(obs[tissue_col].astype(str), obs[group_col].astype(str))
+            if not celltype_by_tissue.empty:
+                dominant = []
+                for tissue_name, row in celltype_by_tissue.iterrows():
+                    top_label = row.sort_values(ascending=False).index[0]
+                    dominant.append(f"{tissue_name}: {top_label}")
+                lines.append("Dominant cell type per tissue: " + "; ".join(dominant[:8]))
+
+            t_mask = obs[group_col].astype(str).map(is_t_cell_like_label)
+            t_obs = obs.loc[t_mask].copy()
+            if t_obs.empty:
+                lines.append("No T-cell-like annotations detected from the current RNA labels.")
+                return "\n".join(lines)
+
+            lines.append(
+                "Coarse T-cell gate from current annotations: "
+                + _top_counts(t_obs[group_col].astype(str), limit=12)
+            )
+
+            tcr_df = normalize_tcr_columns(load_tcr_table(tcr_path))
+            if "barcode" not in tcr_df.columns:
+                lines.append("Baseline warning: TCR table is missing a barcode column.")
+                return "\n".join(lines)
+
+            tcr_df = tcr_df.copy()
+            tcr_df["barcode_exact"] = tcr_df["barcode"].astype(str).map(normalize_barcode)
+            tcr_df["barcode_core"] = tcr_df["barcode"].astype(str).map(barcode_core)
+            tcr_sample_col = infer_sample_column(tcr_df.columns)
+
+            merge_key = "barcode_core"
+            if sample_col and tcr_sample_col:
+                obs["sample_merge_key"] = [
+                    make_merge_key(barcode, sample, use_core=True)
+                    for barcode, sample in zip(obs["barcode"], obs[sample_col])
+                ]
+                tcr_df["sample_merge_key"] = [
+                    make_merge_key(barcode, sample, use_core=True)
+                    for barcode, sample in zip(tcr_df["barcode"], tcr_df[tcr_sample_col])
+                ]
+                if pd.Series(obs["sample_merge_key"]).isin(set(tcr_df["sample_merge_key"])).sum() >= pd.Series(obs["barcode_core"]).isin(set(tcr_df["barcode_core"])).sum():
+                    merge_key = "sample_merge_key"
+
+            grouped = tcr_df.groupby(merge_key, dropna=False).agg(clonotype_id=("clonotype_id", "first"))
+            obs = obs.join(grouped, on=merge_key)
+            obs["has_tcr"] = obs["clonotype_id"].notna()
+            clone_sizes = obs.loc[obs["has_tcr"], "clonotype_id"].astype(str).value_counts()
+            obs["clone_size"] = obs["clonotype_id"].astype(str).map(clone_sizes).fillna(0).astype(int)
+            obs["expanded_clone"] = obs["clone_size"] >= 3
+
+            paired_t = obs.loc[t_mask & obs["has_tcr"].fillna(False).astype(bool)].copy()
+            if paired_t.empty:
+                lines.append("No paired T-cell subset with TCR information was found after baseline merge.")
+                return "\n".join(lines)
+
+            full_adata = ad.read_h5ad(rna_h5ad_path)
+            try:
+                if "cell_type" not in full_adata.obs.columns:
+                    full_adata.obs["cell_type"] = obs[group_col].reindex(full_adata.obs_names).astype(str)
+                for column in ("clonotype_id", "has_tcr", "clone_size", "expanded_clone"):
+                    full_adata.obs[column] = obs[column].reindex(full_adata.obs_names).values
+                assign_clone_type_labels(full_adata)
+                paired_adata = paired_tcr_subset(full_adata)
+                t_adata, t_marker_df, t_annotation_df = recluster_and_annotate_t_cells(
+                    paired_adata,
+                    group_col="cell_type",
+                    model_name=self.hypothesis_model,
+                    logger=self.logger,
+                )
+                t_group_col = "tcell_cluster_cell_type" if "tcell_cluster_cell_type" in t_adata.obs.columns else "tcell_leiden"
+
+                lines.append(
+                    "LLM-defined T-cell subclusters: "
+                    + _top_counts(t_adata.obs[t_group_col].astype(str), limit=12)
+                )
+                if not t_annotation_df.empty:
+                    annotation_lines = []
+                    for row in t_annotation_df.head(8).itertuples():
+                        markers = [item for item in str(row.supporting_markers).split("|") if item][:5]
+                        marker_text = ",".join(markers) if markers else "no markers"
+                        annotation_lines.append(f"{row.cluster_id}->{row.cell_type} ({row.confidence}; {marker_text})")
+                    lines.append("LLM T-cell cluster calls: " + " | ".join(annotation_lines))
+
+                subtype_summary = (
+                    t_adata.obs.groupby(t_group_col, observed=False)
+                    .agg(
+                        paired_cells=("cloneType", "size"),
+                        expanded_fraction=("expanded_clone", "mean"),
+                        median_clone_size=("clone_size", "median"),
+                    )
+                    .sort_values(["expanded_fraction", "paired_cells"], ascending=[False, False])
+                )
+                top_focus = subtype_summary.head(5)
+                focus_lines = [
+                    f"{idx}: expanded_fraction={row.expanded_fraction:.3f}, paired_cells={int(row.paired_cells)}, median_clone_size={float(row.median_clone_size):.1f}"
+                    for idx, row in top_focus.iterrows()
+                ]
+                lines.append("T-cell subclusters prioritized by clonal expansion: " + " | ".join(focus_lines))
+
+                tissue_skew = pd.crosstab(t_adata.obs[t_group_col].astype(str), t_adata.obs[tissue_col].astype(str))
+                skew_lines = []
+                for subtype, row in tissue_skew.iterrows():
+                    total = int(row.sum())
+                    if total == 0:
+                        continue
+                    dominant_tissue = row.sort_values(ascending=False).index[0]
+                    dominant_fraction = float(row.max() / total)
+                    skew_lines.append((dominant_fraction, subtype, dominant_tissue, total))
+                skew_lines.sort(reverse=True)
+                if skew_lines:
+                    lines.append(
+                        "T-cell subclusters with strongest tissue skew: "
+                        + " | ".join(
+                            f"{subtype} -> {dominant_tissue} ({fraction:.2f}, n={total})"
+                            for fraction, subtype, dominant_tissue, total in skew_lines[:5]
+                        )
+                    )
+
+                clone_type_mix = pd.crosstab(t_adata.obs[t_group_col].astype(str), t_adata.obs["cloneType"].astype(str))
+                if not clone_type_mix.empty:
+                    hyper_col = "Hyperexpanded (100 < X <= 500)" if "Hyperexpanded (100 < X <= 500)" in clone_type_mix.columns else clone_type_mix.columns[-1]
+                    ranked = clone_type_mix.div(clone_type_mix.sum(axis=1).replace(0, 1), axis=0).sort_values(hyper_col, ascending=False)
+                    lines.append(
+                        "T-cell subclusters enriched for large/hyperexpanded clones: "
+                        + " | ".join(
+                            f"{idx}: {ranked.loc[idx, hyper_col]:.2f}"
+                            for idx in ranked.head(5).index
+                        )
+                    )
+            finally:
+                if getattr(full_adata, "file", None) is not None:
+                    full_adata.file.close()
+
+            lines.extend(
+                [
+                    "Use this baseline to choose the next innovative hypothesis.",
+                    "Prioritize T-cell subsets that are newly emerged, relatively under-studied in this disease, tissue-skewed, or enriched for large/hyperexpanded clonotypes.",
+                    "After the baseline, the next plan should test how those subsets differ across tissues, how their clone types distribute across tissues, which genes are specifically elevated in tumor/metastasis, and which candidate functional genes could explain the state.",
+                ]
+            )
+            deterministic_summary = "\n".join(lines)
+            return (
+                deterministic_summary
+                + "\n\nBaseline interpretation by the planning model:\n"
+                + self._interpret_standard_baseline_summary(deterministic_summary)
+            )
+        finally:
+            if getattr(adata, "file", None) is not None:
+                adata.file.close()
+
+    def _interpret_standard_baseline_summary(self, baseline_summary: str) -> str:
+        prompt = self._read_prompt("baseline_interpretation.txt").format(
+            baseline_summary=truncate_text(baseline_summary, 12000),
+            context_summary=getattr(self, "context_summary", "") or "No research brief content was provided.",
+            literature_summary=getattr(self, "literature_summary", "") or "No local literature was provided.",
+            validation_summary=getattr(self, "validation_summary", "") or "No validation summary available.",
+        )
+        try:
+            response = litellm.completion(
+                model=self.hypothesis_model,
+                messages=[
+                    {
+                        "role": "system",
+                        "content": (
+                            "You interpret fixed baseline scRNA+scTCR findings and identify the most promising "
+                            "T-cell subsets and mechanistic directions for deeper follow-up."
+                        ),
+                    },
+                    {"role": "user", "content": prompt},
+                ],
+            )
+            content = (response.choices[0].message.content or "").strip()
+            if content:
+                self.logger.log_response(content, "standard_baseline_interpretation")
+                return content
+        except Exception as exc:
+            self.logger.warning(f"Baseline interpretation failed; using deterministic-only summary: {exc}")
+        return (
+            "- No model interpretation was available.\n"
+            "- Use the deterministic baseline observations directly when selecting the next hypothesis.\n"
+            "- Prioritize T-cell subsets with tissue skew, clonal expansion, unusual cloneType composition, or tumor-enriched candidate genes."
+        )
+
+    def _extract_baseline_planning_context(self, baseline_summary: str) -> str:
+        marker = "Baseline interpretation by the planning model:"
+        text = (baseline_summary or "").strip()
+        if marker in text:
+            extracted = text.split(marker, 1)[1].strip()
+            if extracted:
+                return extracted
+        return text or "No baseline planning context available."
+
+    def _extract_baseline_tcell_labels(self, baseline_summary: str) -> list[str]:
+        text = baseline_summary or ""
+        match = re.search(r"LLM-defined T-cell subclusters:\s*(.+)", text)
+        if not match:
+            return []
+        line = match.group(1)
+        labels: list[str] = []
+        for item in re.finditer(r"([^,]+?)\s*\(\d+\)", line):
+            label = item.group(1).strip()
+            if label and label not in labels:
+                labels.append(label)
+        return labels
 
     def _generate_deepresearch_background(self) -> str:
         if not self.openai_api_key:

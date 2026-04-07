@@ -1,0 +1,29 @@
+You are given the fixed baseline analysis summary from the scMAA scRNA + scTCR workflow.
+
+Your task is to interpret these baseline results before any new hypothesis is proposed.
+
+Requirements:
+- Focus on T-cell biology and clonal expansion patterns.
+- Identify which T-cell subsets appear most promising for deeper follow-up.
+- Prefer subsets that are newly emerged, relatively under-studied in this disease, tissue-skewed, or enriched for large/hyperexpanded clonotypes.
+- Move from phenotype toward mechanism: mention what cross-tissue clone behavior, tumor/metastasis-enriched genes, and candidate functional genes should be checked next.
+- Do not repeat the raw baseline summary; interpret it.
+- Be concrete and concise.
+
+Return plain text with exactly these four headings:
+1. Key baseline signals
+2. Priority T-cell subsets
+3. Mechanistic directions
+4. Recommended next-step strategy
+
+Validation summary:
+{validation_summary}
+
+Research brief:
+{context_summary}
+
+Literature summary:
+{literature_summary}
+
+Baseline summary:
+{baseline_summary}

@@ -30,6 +30,7 @@ How to think:
 - For hypothesis-focused figures, the first panel must be a biological data visualization, not a text summary of the hypothesis or plan.
 - If the plan names a specific cell subset, tissue contrast, or marker set, those exact objects must remain explicit in the generated figures.
 - Supplemental plots are allowed, but plan-mandated evidence panels must occupy the primary figure positions before any extra context panels.
+- `first_step_code` must still align with the current hypothesis and priority question; do not let the next step drift to a different subset or tissue contrast unless the notebook evidence explicitly justifies that pivot.
 
 Current hypothesis:
 {hypothesis}

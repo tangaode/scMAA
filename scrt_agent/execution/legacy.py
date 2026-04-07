@@ -48,6 +48,7 @@ class LegacyNotebookExecutor:
         tcr_summary: str,
         joint_summary: str,
         validation_summary: str,
+        standard_baseline_summary: str,
         context_summary: str,
         logger,
         rna_h5ad_path: str,
@@ -70,6 +71,7 @@ class LegacyNotebookExecutor:
         self.tcr_summary = tcr_summary
         self.joint_summary = joint_summary
         self.validation_summary = validation_summary
+        self.standard_baseline_summary = standard_baseline_summary
         self.context_summary = context_summary
         self.logger = logger
         self.rna_h5ad_path = str(Path(rna_h5ad_path))
@@ -144,7 +146,9 @@ if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
 from scrt_agent.notebook_tools import (
+    assign_clone_type_labels,
     clone_expansion_table,
+    clone_type_distribution_table,
     expanded_clone_tissue_de,
     expression_frame,
     ensure_obs_column,
@@ -156,9 +160,13 @@ from scrt_agent.notebook_tools import (
     plot_de_heatmap,
     plot_tissue_embedding,
     print_clone_expansion_table,
+    proportion_table,
+    recluster_and_annotate_t_cells,
     resolve_gene_names,
     safe_rank_genes_groups,
     summarize_de_pathways,
+    t_cell_subset,
+    t_cell_cluster_marker_summary,
     tissue_stratified_expansion_de,
     tumor_like_subset,
 )
@@ -404,6 +412,89 @@ print(f"Expanded-clone fraction among TCR+ cells: {{float(adata_rna.obs.loc[adat
 print("Notebook helper functions available: paired_tcr_subset, infer_tumor_like_tissues, infer_primary_metastasis_tissues, tumor_like_subset, resolve_gene_names, expression_frame, print_clone_expansion_table, safe_rank_genes_groups, tissue_stratified_expansion_de, expanded_clone_tissue_de, plot_de_barplot, plot_de_heatmap, plot_tissue_embedding, summarize_de_pathways")
 """
         notebook.cells.append(new_code_cell(setup_code))
+        notebook.cells.append(
+            new_markdown_cell(
+                "## Standard Baseline Analysis\n\n"
+                "The agent must first review a fixed baseline analysis before proposing any innovative hypothesis.\n\n"
+                f"{self.standard_baseline_summary}"
+            )
+        )
+        baseline_code = """# Deterministic baseline analysis before hypothesis-driven exploration
+group_col = "cell_type" if "cell_type" in adata_rna.obs.columns else ("cluster_cell_type" if "cluster_cell_type" in adata_rna.obs.columns else "leiden")
+tissue_col = "tissue" if "tissue" in adata_rna.obs.columns else ("sample_key" if "sample_key" in adata_rna.obs.columns else "sample_id")
+paired_adata = paired_tcr_subset(adata_rna)
+assign_clone_type_labels(paired_adata)
+
+# 1. Global scRNA embedding with current annotations
+if "X_umap" in adata_rna.obsm:
+    sc.pl.umap(adata_rna, color=group_col, title="scRNA UMAP with annotations", frameon=False)
+
+# 2. Global cell-type composition across tissues
+global_prop = proportion_table(adata_rna, group_col=group_col, tissue_col=tissue_col, normalize="index")
+if not global_prop.empty:
+    ax = global_prop.plot(kind="bar", stacked=True, figsize=(10, 5), colormap="tab20")
+    ax.set_title("Cell-type composition across tissues")
+    ax.set_ylabel("Fraction")
+    ax.set_xlabel("")
+    plt.xticks(rotation=35)
+    plt.tight_layout()
+    plt.show()
+
+# 3. T-cell subset reclustering / LLM-guided annotation
+t_adata, t_marker_df, t_annotation_df = recluster_and_annotate_t_cells(
+    paired_adata,
+    group_col=group_col,
+    model_name="gpt-4o",
+)
+t_group_col = "tcell_cluster_cell_type" if "tcell_cluster_cell_type" in t_adata.obs.columns else group_col
+sc.pl.umap(
+    t_adata,
+    color=["tcell_leiden", t_group_col],
+    title=["T-cell reclustering", "LLM-defined T-cell annotation"],
+    frameon=False,
+)
+print("T-cell cluster marker summary (top non-lincRNA markers per cluster):")
+print(t_cell_cluster_marker_summary(t_marker_df, top_n=50))
+if not t_annotation_df.empty:
+    print("T-cell cluster annotations:")
+    print(t_annotation_df[["cluster_id", "cell_type", "confidence"]].to_string(index=False))
+
+# 4. T-cell subtype composition across tissues
+t_prop = proportion_table(t_adata, group_col=t_group_col, tissue_col=tissue_col, normalize="index")
+if not t_prop.empty:
+    ax = t_prop.plot(kind="bar", stacked=True, figsize=(10, 5), colormap="tab20")
+    ax.set_title("T-cell subtype composition across tissues")
+    ax.set_ylabel("Fraction")
+    ax.set_xlabel("")
+    plt.xticks(rotation=35)
+    plt.tight_layout()
+    plt.show()
+
+# 5. cloneType UMAP within T cells
+if "X_umap" in t_adata.obsm:
+    sc.pl.umap(t_adata, color=[t_group_col, "cloneType"], title=["T-cell annotation", "T-cell cloneType"], frameon=False)
+
+# 6. cloneType composition across T-cell subtypes
+clone_mix = clone_type_distribution_table(t_adata, group_col=t_group_col, clone_type_col="cloneType")
+if not clone_mix.empty:
+    ax = clone_mix.plot(kind="bar", stacked=True, figsize=(10, 5), colormap="viridis")
+    ax.set_title("cloneType composition across T-cell subtypes")
+    ax.set_ylabel("Fraction")
+    ax.set_xlabel("")
+    plt.xticks(rotation=35)
+    plt.tight_layout()
+    plt.show()
+
+# 7. Baseline printed priorities for downstream hypothesis generation
+baseline_priority = (
+    t_adata.obs.groupby(t_group_col, observed=False)["expanded_clone"]
+    .agg(paired_cells="size", expanded_fraction="mean")
+    .sort_values(["expanded_fraction", "paired_cells"], ascending=[False, False])
+)
+print("Baseline T-cell priority table:")
+print(baseline_priority.head(10).to_string())
+"""
+        notebook.cells.append(new_code_cell(baseline_code))
         return notebook
 
     def _save_notebook(self, notebook: nbf.NotebookNode, path: Path) -> None:
@@ -425,15 +516,14 @@ print("Notebook helper functions available: paired_tcr_subset, infer_tumor_like_
                 return cell
         return None
 
-    def run_last_code_cell(self, notebook: nbf.NotebookNode) -> tuple[bool, str | None]:
+    def _get_code_cells(self, notebook: nbf.NotebookNode) -> list:
+        return [cell for cell in notebook.cells if getattr(cell, "cell_type", "") == "code"]
+
+    def _run_code_cell(self, cell) -> tuple[bool, str | None]:
         if self.kernel_client is None:
             raise RuntimeError("Kernel has not been started.")
 
-        last_code_cell = self._get_last_code_cell(notebook)
-        if last_code_cell is None:
-            raise ValueError("No code cell found to execute.")
-
-        msg_id = self.kernel_client.execute(last_code_cell.source)
+        msg_id = self.kernel_client.execute(cell.source)
         outputs = []
         error_text = None
         start_time = time.time()
@@ -495,8 +585,14 @@ print("Notebook helper functions available: paired_tcr_subset, infer_tumor_like_
                 )
                 error_text = f"{content['ename']}: {content['evalue']}"
 
-        last_code_cell.outputs = outputs
+        cell.outputs = outputs
         return error_text is None, error_text
+
+    def run_last_code_cell(self, notebook: nbf.NotebookNode) -> tuple[bool, str | None]:
+        last_code_cell = self._get_last_code_cell(notebook)
+        if last_code_cell is None:
+            raise ValueError("No code cell found to execute.")
+        return self._run_code_cell(last_code_cell)
 
     def _collect_text_output(self, cell) -> str:
         parts: list[str] = []
@@ -1002,9 +1098,15 @@ pathway_tables = summarize_de_pathways(
         step_validation_summary = "No step validation notes yet."
         total_step_budget = max(self.max_iterations, len(approved_plan_items) + 2, 3)
         try:
-            ok, error = self.run_last_code_cell(notebook)
+            initial_code_cells = self._get_code_cells(notebook)
+            if len(initial_code_cells) < 2:
+                raise RuntimeError("Initial notebook must contain setup and baseline code cells.")
+            ok, error = self._run_code_cell(initial_code_cells[0])
             if not ok:
                 raise RuntimeError(f"Notebook setup failed: {error}")
+            ok, error = self._run_code_cell(initial_code_cells[1])
+            if not ok:
+                raise RuntimeError(f"Baseline analysis setup failed: {error}")
 
             current_analysis = analysis
 

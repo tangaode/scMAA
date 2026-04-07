@@ -26,6 +26,8 @@ Requirements:
 - Treat user strategy feedback as a high-priority constraint.
 - Prefer notebook helper functions over ad hoc category wrangling or repeated DE boilerplate.
 - Keep the plan executable and falsifiable.
+- Keep `first_step_code` aligned with the plan hypothesis and priority question.
+- If you revise the biological focus in prose, revise the code to match; if the code keeps the same focus, do not rewrite the prose toward a different focus.
 
 Coding guidelines:
 {CODING_GUIDELINES}

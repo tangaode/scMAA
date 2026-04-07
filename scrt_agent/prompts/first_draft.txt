@@ -17,12 +17,17 @@ Hard requirements:
 - Do not repeat past analyses.
 - This scRNA + scTCR workflow should prefer `joint` analysis when RNA-TCR overlap is usable.
 - Favor `joint` unless the first evidence step truly does not require clonotype, clone expansion, or repertoire support.
+- Treat the fixed baseline T-cell/clonotype analysis as already completed and already observed.
+- Build the novel hypothesis from those baseline results instead of restarting from generic whole-dataset exploration.
+- Prefer innovative but defensible directions: newly emerged T-cell subsets, disease-understudied T-cell states, tissue-skewed T-cell subsets, clonally expanded subsets, and candidate functional genes that could explain those states.
 - Choose the next step with the highest information gain, not the safest generic step.
 - The first step should produce evidence that can support, weaken, or reframe the hypothesis.
 - Avoid placeholder cleaning or metadata-filling steps unless the dataset evidence explicitly shows a problem.
 - Prefer the notebook helper functions when they cover the needed operation.
 - `first_step_code` must use already loaded `adata_rna` and/or `tcr_df`.
 - The code must print or plot something directly interpretable.
+- `first_step_code` must directly test the generated hypothesis, not a looser neighboring idea.
+- If the hypothesis names a T-cell subset, tissue contrast, clone behavior, or candidate gene, keep those same objects explicit in the first step.
 - Keep the full plan to at most {max_iterations} steps.
 
 Coding guidelines:

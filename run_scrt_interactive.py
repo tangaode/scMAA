@@ -63,7 +63,10 @@ def _load_agent_from_session(session_dir: Path, args) -> tuple[ScRTAgent, dict]:
     for key, value in defaults.items():
         if not hasattr(namespace, key):
             setattr(namespace, key, value)
-    namespace.with_figure = getattr(args, "with_figure", config.get("with_figure", False))
+    if getattr(args, "with_figure", None) is None:
+        namespace.with_figure = config.get("with_figure", False)
+    else:
+        namespace.with_figure = args.with_figure
     namespace.figure_name = getattr(args, "figure_name", config.get("figure_name"))
     agent = _build_agent_from_args(namespace, analysis_name=session_dir.name, output_home=str(session_dir.parent))
     return agent, config
@@ -208,13 +211,13 @@ def main() -> int:
     review_parser.add_argument("--hypothesis-file", default=None, help="Path to a file containing custom hypothesis text.")
     review_parser.add_argument("--feedback-text", default=None, help="Optional freeform user feedback to revise the hypothesis.")
     review_parser.add_argument("--feedback-file", default=None, help="Optional path to freeform user feedback text.")
-    review_parser.add_argument("--with-figure", action="store_true", help="Enable figure generation when this session later runs.")
+    review_parser.add_argument("--with-figure", action="store_true", default=None, help="Enable figure generation when this session later runs.")
     review_parser.add_argument("--figure-name", default=None, help="Optional figure base name override.")
     review_parser.set_defaults(func=cmd_review)
 
     run_parser = subparsers.add_parser("run", help="Run the approved interactive session.")
     run_parser.add_argument("--session-dir", required=True, help="Path to the prepared session directory.")
-    run_parser.add_argument("--with-figure", action="store_true", help="Generate a publication-style figure after run.")
+    run_parser.add_argument("--with-figure", action="store_true", default=None, help="Generate a publication-style figure after run.")
     run_parser.add_argument("--figure-name", default=None, help="Optional figure base name override.")
     run_parser.set_defaults(func=cmd_run)
 

@@ -115,8 +115,10 @@ def read_run_result_context(figure_output_dir: str | Path) -> dict[str, str]:
         "final_interpretation": "",
         "approved_plan_text": "",
         "approved_strategy_feedback": "",
+        "user_feedback": "",
         "approved_priority_question": "",
         "approved_plan_steps": "",
+        "standard_baseline_summary": "",
     }
     run_summary_path = run_dir / "run_summary.txt"
     if run_summary_path.exists():
@@ -147,6 +149,18 @@ def read_run_result_context(figure_output_dir: str | Path) -> dict[str, str]:
             context["approved_strategy_feedback"] = approved_strategy_path.read_text(encoding="utf-8").strip()
         except Exception:
             context["approved_strategy_feedback"] = ""
+    user_feedback_path = run_dir / "user_feedback.txt"
+    if user_feedback_path.exists():
+        try:
+            context["user_feedback"] = user_feedback_path.read_text(encoding="utf-8").strip()
+        except Exception:
+            context["user_feedback"] = ""
+    baseline_summary_path = run_dir / "standard_baseline_summary.txt"
+    if baseline_summary_path.exists():
+        try:
+            context["standard_baseline_summary"] = baseline_summary_path.read_text(encoding="utf-8").strip()
+        except Exception:
+            context["standard_baseline_summary"] = ""
     return context
 
 
@@ -203,6 +217,8 @@ def plot_categorical_embedding(
     title: str,
     basis: str = "X_umap",
     label_points: bool = True,
+    show_legend: bool = True,
+    legend_title: str | None = None,
 ) -> None:
     fallback_basis = basis
     if fallback_basis not in adata.obsm and basis == "X_umap" and "X_pca" in adata.obsm:
@@ -224,12 +240,23 @@ def plot_categorical_embedding(
     for category in categories:
         subset = frame.loc[frame[color].astype(str) == category]
         ax.scatter(subset["x"], subset["y"], s=7, alpha=0.8, color=palette[category], label=category, rasterized=True)
-    if label_points and len(categories) <= 18:
+    if label_points and len(categories) <= 12:
         centers = frame.groupby(color, observed=False)[["x", "y"]].median()
         for category, row in centers.iterrows():
             ax.text(row["x"], row["y"], str(category), fontsize=8, weight="bold")
-    elif len(categories) <= 18:
-        ax.legend(loc="best", fontsize=7, frameon=False)
+    if show_legend:
+        ncol = 1 if len(categories) <= 12 else 2
+        ax.legend(
+            loc="upper left",
+            bbox_to_anchor=(1.02, 1.0),
+            fontsize=7,
+            frameon=False,
+            title=legend_title or color,
+            title_fontsize=8,
+            ncol=ncol,
+            borderaxespad=0.0,
+            markerscale=1.8,
+        )
     ax.set_title(title, fontsize=11)
     if fallback_basis == "X_umap":
         ax.set_xlabel("UMAP1")

@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import os
 from pathlib import Path
 import re
+import traceback
 
 import anndata as ad
 import matplotlib
@@ -15,8 +17,18 @@ import matplotlib.pyplot as plt
 from matplotlib.gridspec import GridSpec
 import numpy as np
 import pandas as pd
+from pydantic import BaseModel, Field
 import scanpy as sc
 import seaborn as sns
+
+try:
+    import instructor
+    import litellm
+
+    litellm.drop_params = True
+except Exception:  # pragma: no cover
+    instructor = None
+    litellm = None
 
 from scrt_agent.figure_common import (
     ensure_display_column,
@@ -29,9 +41,13 @@ from scrt_agent.figure_common import (
 )
 
 from .notebook_tools import (
+    assign_clone_type_labels,
     clone_expansion_table,
+    clone_type_distribution_table,
     expression_frame,
     paired_tcr_subset,
+    proportion_table,
+    recluster_and_annotate_t_cells,
     resolve_gene_names,
     tissue_stratified_expansion_de,
     tumor_like_subset,
@@ -46,10 +62,17 @@ class FigureResult:
     summary_path: Path
 
 
+class HypothesisFigureResponse(BaseModel):
+    analysis_focus: str = Field(description="Main biological focus chosen from the baseline results.")
+    rationale: str = Field(description="Why this focus should be visualized next, grounded in baseline results and user feedback.")
+    code: str = Field(description="Executable Python code that creates a publication-quality hypothesis figure and assigns it to variable `fig`.")
+
+
 T_CELL_HINTS = ("t cell", "t cells", "cd8", "cd4", "treg", "regulatory t", "cytotoxic t")
 CD8_T_CELL_HINTS = ("cd8", "cytotoxic")
 PSEUDOTIME_HINTS = ("pseudotime", "trajectory", "dpt", "pseudotemporal", "trajectory analysis")
 EXHAUSTION_MARKER_CANDIDATES = ["PDCD1", "LAG3", "HAVCR2", "TIGIT", "CTLA4", "TOX", "CXCL13"]
+BAD_FOCUS_LABEL_HINTS = ("doublet", "contaminant", "ambiguous", "unknown", "artifact", "low quality")
 DEFAULT_FOCUS_GENES = [
     "TCF7",
     "IL7R",
@@ -64,6 +87,528 @@ DEFAULT_FOCUS_GENES = [
     "GZMB",
     "XBP1",
 ]
+PLACEHOLDER_PATTERNS = (
+    "no umap",
+    "no data",
+    "not available",
+    "unavailable",
+    "placeholder",
+    "no marker data",
+    "no contrast data",
+    "no diversity data",
+    "no paired clonotype data",
+    "no clone",
+    "empty panel",
+)
+INVALID_CODE_PATTERNS: tuple[tuple[str, str], ...] = (
+    (r"=\s*\.\.\.", "Do not assign placeholder ellipsis values such as `t_adata = ...`."),
+    (r"if\s+__name__\s*==\s*[\"']__main__[\"']\s*:", "Do not use a `__main__` guard; the code is executed directly."),
+    (r"def\s+main\s*\(", "Do not wrap the plotting workflow inside `main()`; execute it at top level."),
+    (r"Load your AnnData object here", "Do not include placeholder comments about loading data."),
+)
+
+
+def _read_figure_prompt(prompt_dir: str | Path | None, name: str) -> str:
+    base = Path(prompt_dir) if prompt_dir else (Path(__file__).resolve().parent / "prompts")
+    return (base / name).read_text(encoding="utf-8")
+
+
+def _load_figure_env_files(*paths: str | Path) -> None:
+    try:
+        from dotenv import load_dotenv
+    except Exception:
+        return
+    project_root = Path(__file__).resolve().parents[1]
+    candidate_dirs = [Path.cwd(), project_root, project_root.parent]
+    for item in paths:
+        if item:
+            candidate_dirs.append(Path(item).resolve().parent)
+    seen: set[Path] = set()
+    for directory in candidate_dirs:
+        if directory in seen:
+            continue
+        seen.add(directory)
+        for name in (".env", "OPENAI.env", "deepseek.env"):
+            env_path = directory / name
+            if env_path.exists():
+                load_dotenv(env_path, override=False)
+
+
+def _safe_exec_code(code: str, namespace: dict) -> tuple[plt.Figure | None, str | None]:
+    try:
+        exec(code, namespace, namespace)
+    except Exception:
+        return None, traceback.format_exc()
+    fig = namespace.get("fig")
+    if fig is None:
+        try:
+            fig = plt.gcf()
+        except Exception:
+            fig = None
+    if fig is None:
+        return None, "Generated code did not create a matplotlib figure named `fig`."
+    return fig, None
+
+
+def _strip_code_fences(text: str) -> str:
+    cleaned = (text or "").strip()
+    lines = []
+    for line in cleaned.splitlines():
+        if line.strip().startswith("```"):
+            continue
+        lines.append(line)
+    return "\n".join(lines).strip()
+
+
+def _dynamic_hypothesis_context(
+    *,
+    t_adata: ad.AnnData,
+    t_group_col: str,
+    tissue_col: str,
+) -> str:
+    if t_adata.n_obs == 0 or t_group_col not in t_adata.obs.columns:
+        return "No focused T-cell reclustering context is available."
+    lines: list[str] = []
+    counts = t_adata.obs[t_group_col].astype(str).value_counts()
+    lines.append("LLM-defined T-cell subclusters: " + ", ".join(f"{idx} ({int(val)})" for idx, val in counts.head(12).items()))
+    tissue_mix = pd.crosstab(t_adata.obs[t_group_col].astype(str), t_adata.obs[tissue_col].astype(str))
+    if not tissue_mix.empty:
+        summary_bits = []
+        for subtype, row in tissue_mix.iterrows():
+            top_tissue = row.sort_values(ascending=False).index[0]
+            top_fraction = float(row.max() / max(row.sum(), 1))
+            summary_bits.append(f"{subtype}->{top_tissue} ({top_fraction:.2f})")
+        lines.append("Tissue skew by T-cell subcluster: " + " | ".join(summary_bits[:8]))
+    if "cloneType" in t_adata.obs.columns:
+        clone_mix = pd.crosstab(t_adata.obs[t_group_col].astype(str), t_adata.obs["cloneType"].astype(str))
+        if not clone_mix.empty:
+            ranked = clone_mix.div(clone_mix.sum(axis=1).replace(0, 1), axis=0)
+            hyper_col = "Hyperexpanded (100 < X <= 500)" if "Hyperexpanded (100 < X <= 500)" in ranked.columns else ranked.columns[-1]
+            top_rows = ranked.sort_values(hyper_col, ascending=False).head(8)
+            lines.append(
+                "Large/hyperexpanded enrichment by T-cell subcluster: "
+                + " | ".join(f"{idx}:{top_rows.loc[idx, hyper_col]:.2f}" for idx in top_rows.index)
+            )
+    return "\n".join(lines)
+
+
+def _normalize_basis_alias(basis: str | None) -> str:
+    if not basis:
+        return "X_umap"
+    normalized = str(basis).strip().lower()
+    if normalized in {"umap", "x_umap"}:
+        return "X_umap"
+    if normalized in {"pca", "x_pca"}:
+        return "X_pca"
+    return str(basis)
+
+
+def _is_probable_colorbar_axis(ax) -> bool:
+    bbox = ax.get_position()
+    return bbox.width < 0.05 or bbox.height < 0.05
+
+
+def _axis_free_text(ax) -> list[str]:
+    texts: list[str] = []
+    for text in ax.texts:
+        value = str(text.get_text() or "").strip()
+        if not value:
+            continue
+        if re.fullmatch(r"[A-Fa-f]", value):
+            continue
+        texts.append(value)
+    return texts
+
+
+def _validate_generated_figure(fig: plt.Figure | None) -> str | None:
+    if fig is None:
+        return "The generated code did not produce a matplotlib figure."
+    main_axes = [ax for ax in fig.axes if not _is_probable_colorbar_axis(ax)]
+    if not main_axes:
+        return "The generated figure does not contain any main plotting axes."
+    issues: list[str] = []
+    contentful_axes = 0
+    for idx, ax in enumerate(main_axes, start=1):
+        title = str(ax.get_title() or "").strip()
+        free_text = _axis_free_text(ax)
+        candidate_text = [title, *free_text]
+        placeholder = next(
+            (
+                item
+                for item in candidate_text
+                if any(pattern in item.lower() for pattern in PLACEHOLDER_PATTERNS)
+            ),
+            None,
+        )
+        if placeholder:
+            issues.append(f"Axis {idx} contains placeholder text: {placeholder!r}.")
+            continue
+        if not ax.has_data():
+            issues.append(
+                f"Axis {idx} has no plotted data. Remove the axis entirely or replace it with a real plot."
+            )
+            continue
+        contentful_axes += 1
+    if contentful_axes < 3:
+        issues.append(
+            f"The figure has only {contentful_axes} contentful axes. Create at least 3 biologically informative panels."
+        )
+    if issues:
+        return "\n".join(issues)
+    return None
+
+
+def _validate_generated_code_text(code: str) -> str | None:
+    for pattern, message in INVALID_CODE_PATTERNS:
+        if re.search(pattern, code or "", flags=re.IGNORECASE):
+            return message
+    return None
+
+
+def _generate_model_hypothesis_figure(
+    *,
+    adata_rna: ad.AnnData,
+    paired_adata: ad.AnnData,
+    t_adata: ad.AnnData,
+    t_group_col: str,
+    t_marker_df: pd.DataFrame,
+    t_annotation_df: pd.DataFrame,
+    tcr_df: pd.DataFrame,
+    tissue_col: str,
+    output_dir: str | Path,
+    figure_name: str,
+    result_context: dict[str, str],
+    hypothesis_model: str = "gpt-4o",
+    baseline_summary_text: str = "",
+    prompt_dir: str | Path | None = None,
+) -> tuple[Path, Path, Path, Path, str, str]:
+    if instructor is None or litellm is None:
+        raise RuntimeError("Dynamic hypothesis figure generation requires instructor and litellm.")
+
+    output_dir = Path(output_dir)
+    hyp_png = output_dir / f"{figure_name}_hypothesis.png"
+    hyp_pdf = output_dir / f"{figure_name}_hypothesis.pdf"
+    code_path = output_dir / f"{figure_name}_hypothesis_generated_code.py"
+    plan_path = output_dir / f"{figure_name}_hypothesis_generated_plan.txt"
+    prompt_template = _read_figure_prompt(prompt_dir, "hypothesis_figure_code.txt")
+
+    marker_preview = ""
+    if not t_annotation_df.empty:
+        marker_preview = t_annotation_df.head(12).to_csv(index=False)
+    marker_summary = ""
+    if not t_marker_df.empty:
+        top_marker_lines = []
+        for cluster in sorted(t_marker_df["cluster"].astype(str).unique(), key=lambda x: (len(x), x)):
+            subset = t_marker_df.loc[
+                (t_marker_df["cluster"].astype(str) == cluster)
+                & (~t_marker_df["is_linc_like"].astype(bool))
+            ].head(12)
+            genes = subset["names"].astype(str).tolist()
+            top_marker_lines.append(f"Cluster {cluster}: {', '.join(genes)}")
+        marker_summary = "\n".join(top_marker_lines[:12])
+
+    prompt = prompt_template.format(
+        executed_hypothesis=result_context.get("executed_hypothesis", "") or "none",
+        approved_priority_question=result_context.get("approved_priority_question", "") or "none",
+        approved_plan_steps=result_context.get("approved_plan_steps", "") or "none",
+        approved_strategy_feedback=result_context.get("approved_strategy_feedback", "") or "none",
+        user_feedback=result_context.get("user_feedback", "") or "none",
+        final_interpretation=result_context.get("final_interpretation", "") or "none",
+        baseline_summary=(baseline_summary_text or result_context.get("standard_baseline_summary", "") or "none"),
+        tcell_context=_dynamic_hypothesis_context(t_adata=t_adata, t_group_col=t_group_col, tissue_col=tissue_col),
+        tcell_annotation_table=marker_preview or "none",
+        tcell_marker_summary=marker_summary or "none",
+        t_group_col=t_group_col,
+        tissue_col=tissue_col,
+        obs_columns=", ".join(map(str, adata_rna.obs.columns)),
+        tcell_obs_columns=", ".join(map(str, t_adata.obs.columns)),
+        tcell_obsm_keys=", ".join(map(str, t_adata.obsm.keys())) or "none",
+        paired_obs_columns=", ".join(map(str, paired_adata.obs.columns)),
+        tissue_levels=", ".join(sorted(adata_rna.obs[tissue_col].astype(str).dropna().unique().tolist())) if tissue_col in adata_rna.obs.columns else "unknown",
+        figure_png_path=str(hyp_png),
+        figure_pdf_path=str(hyp_pdf),
+    )
+    client = instructor.from_litellm(litellm.completion)
+    response = client.chat.completions.create(
+        model=hypothesis_model,
+        messages=[
+            {
+                "role": "system",
+                "content": (
+                    "You are a computational immunology figure author. "
+                    "Given baseline scRNA+scTCR results, approved analysis plan, and user feedback, "
+                    "decide the next hypothesis-driven analysis and write executable Python figure code."
+                ),
+            },
+            {"role": "user", "content": prompt},
+        ],
+        response_model=HypothesisFigureResponse,
+    )
+
+    initial_code = _strip_code_fences(response.code or "")
+    code_path.write_text(initial_code + "\n", encoding="utf-8")
+    plan_path.write_text(
+        "\n".join(
+            [
+                f"analysis_focus: {response.analysis_focus}",
+                "",
+                "rationale:",
+                response.rationale,
+                "",
+                "model: " + hypothesis_model,
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    def _compat_plot_categorical_embedding(*args, **kwargs):
+        adata = kwargs.pop("adata", None)
+        ax = kwargs.pop("ax", None)
+        obs_col = kwargs.pop("obs_col", None)
+        color = kwargs.pop("color", None) or kwargs.pop("category", None)
+        basis = _normalize_basis_alias(kwargs.pop("basis", None))
+        subset_categories = kwargs.pop("subset_categories", None)
+        subset_category = kwargs.pop("subset_category", None)
+        title = kwargs.pop("title", "")
+        remaining = list(args)
+        if adata is None and remaining and hasattr(remaining[0], "obs") and hasattr(remaining[0], "obsm"):
+            adata = remaining.pop(0)
+        if ax is None and remaining and not (hasattr(remaining[0], "obs") and hasattr(remaining[0], "obsm")):
+            ax = remaining.pop(0)
+        if adata is None and remaining and hasattr(remaining[0], "obs") and hasattr(remaining[0], "obsm"):
+            adata = remaining.pop(0)
+        if ax is None and remaining:
+            ax = remaining.pop(0)
+        if subset_category is not None and subset_categories is None:
+            subset_categories = [subset_category]
+        if adata is None:
+            raise ValueError("adata is required for plot_categorical_embedding.")
+        chosen_color = color or obs_col or t_group_col
+        working = adata
+        if subset_categories and chosen_color in adata.obs.columns:
+            categories = {str(item) for item in subset_categories}
+            mask = adata.obs[chosen_color].astype(str).isin(categories)
+            if mask.any():
+                working = adata[mask].copy()
+        target_ax = ax if ax is not None else plt.gca()
+        return plot_categorical_embedding(target_ax, working, color=chosen_color, title=title, basis=basis, **kwargs)
+
+    def _compat_clone_type_distribution_table(*args, **kwargs):
+        adata = kwargs.pop("adata", None)
+        group_col = kwargs.pop("group_col", None)
+        clone_type_col = kwargs.pop("clone_type_col", "cloneType")
+        groupby_col = kwargs.pop("groupby_col", None)
+        subset_col = kwargs.pop("subset_col", None)
+        subset_value = kwargs.pop("subset_value", None)
+        if adata is None and args:
+            adata = args[0]
+        if adata is None:
+            raise ValueError("adata is required for clone_type_distribution_table.")
+        working = adata
+        if subset_col and subset_col in working.obs.columns and subset_value is not None:
+            working = working[working.obs[subset_col].astype(str) == str(subset_value)].copy()
+        chosen_group = group_col or groupby_col or t_group_col
+        columns = [clone_type_col]
+        for extra in (tissue_col, "clone_size", chosen_group, t_group_col, "cell_type"):
+            if extra in working.obs.columns and extra not in columns:
+                columns.append(extra)
+        return working.obs[columns].copy()
+
+    def _compat_expression_frame(*args, **kwargs):
+        adata = kwargs.pop("adata", None)
+        genes = kwargs.pop("genes", None)
+        obs_columns = kwargs.pop("obs_columns", None)
+        group_col = kwargs.pop("group_col", None) or kwargs.pop("color", None)
+        if adata is None and args:
+            adata = args[0]
+            args = args[1:]
+        if genes is None and args:
+            genes = args[0]
+        if adata is None or genes is None:
+            raise ValueError("adata and genes are required for expression_frame.")
+        chosen_obs = list(obs_columns or [])
+        if group_col and group_col not in chosen_obs:
+            chosen_obs.append(group_col)
+        return expression_frame(adata, genes, obs_columns=chosen_obs or None)
+
+    def _compat_proportion_table(*args, **kwargs):
+        adata = kwargs.pop("adata", None)
+        group_col = kwargs.pop("group_col", None)
+        tissue_name = kwargs.pop("tissue_col", None)
+        normalize = kwargs.pop("normalize", "index")
+        if adata is None and args:
+            adata = args[0]
+            args = args[1:]
+        if group_col is None and args:
+            group_col = args[0]
+            args = args[1:]
+        if tissue_name is None and args:
+            tissue_name = args[0]
+        if adata is None:
+            raise ValueError("adata is required for proportion_table.")
+        chosen_group = group_col or t_group_col
+        chosen_tissue = tissue_name or tissue_col
+        requested_long = kwargs.get("long_form", False)
+        if isinstance(normalize, bool):
+            requested_long = True
+            normalize = "index" if normalize else "none"
+        table = proportion_table(adata, group_col=chosen_group, tissue_col=chosen_tissue, normalize=normalize if normalize in {"index", "columns"} else "index")
+        if chosen_group == chosen_tissue:
+            long_df = (
+                adata.obs[[chosen_tissue]]
+                .dropna()
+                .assign(proportion=1.0)
+                .reset_index(drop=True)
+            )
+            return long_df
+        if requested_long:
+            long_df = table.reset_index().melt(id_vars=table.index.name or chosen_tissue, var_name=chosen_group, value_name="proportion")
+            if table.index.name != chosen_tissue:
+                long_df = long_df.rename(columns={table.index.name or "index": chosen_tissue})
+            return long_df
+        return table
+
+    def _compat_tissue_stratified_expansion_de(*args, **kwargs):
+        try:
+            result = tissue_stratified_expansion_de(*args, **kwargs)
+        except Exception:
+            return pd.DataFrame(), pd.DataFrame()
+        if result is None or (hasattr(result, "empty") and result.empty):
+            return pd.DataFrame(), pd.DataFrame()
+        if not isinstance(result, pd.DataFrame):
+            return pd.DataFrame(), pd.DataFrame()
+        top_genes = result["names"].astype(str).head(12).tolist() if "names" in result.columns else []
+        source_adata = args[0] if args else kwargs.get("adata")
+        expr = pd.DataFrame()
+        if source_adata is not None and top_genes:
+            try:
+                obs_cols = [tissue_col] if tissue_col in source_adata.obs.columns else None
+                expr = expression_frame(source_adata, top_genes, obs_columns=obs_cols)
+                if obs_cols:
+                    expr = expr.groupby(tissue_col, observed=False).mean(numeric_only=True).T
+            except Exception:
+                expr = pd.DataFrame()
+        return expr, result
+
+    def _repair_generated_code(bad_code: str, error_text: str) -> str:
+        repair_prompt = (
+            "The previous hypothesis-figure code failed. Rewrite it into a simpler, more robust version and return only executable Python.\n\n"
+            f"Execution error:\n{error_text}\n\n"
+            f"Current subtype column: {t_group_col}\n"
+            f"Current tissue column: {tissue_col}\n"
+            f"Available T-cell obs columns: {', '.join(map(str, t_adata.obs.columns))}\n"
+            f"Available T-cell embedding keys: {', '.join(map(str, t_adata.obsm.keys())) or 'none'}\n\n"
+            "Use the existing namespace only. Important helper signatures:\n"
+            "- plot_categorical_embedding(ax, adata, *, color, title, basis='X_umap', label_points=True, show_legend=True, legend_title=None)\n"
+            "- proportion_table(...) in this environment returns either a long-form or simple table suitable for plotting; prefer inspecting columns before plotting.\n"
+            "- clone_type_distribution_table(...) in this environment returns a row-level DataFrame with columns like cloneType, tissue, clone_size, and cell_type when available.\n"
+            "- expression_frame(adata, genes, obs_columns=None) requires a concrete list of genes.\n"
+            "- tissue_stratified_expansion_de(...) in this environment may return `(expr_matrix, de_table)`; handle both objects defensively.\n"
+            "- panel_label(ax, label)\n\n"
+            "Rules:\n"
+            "- If a prior approach is brittle, rewrite from scratch instead of patching line-by-line.\n"
+            "- Do not assume the first panel must be UMAP. Let the biological story determine the plot types.\n"
+            "- You may use any sensible multi-panel layout, but every panel you create must contain a real biological plot.\n"
+            "- If you only have 3 or 4 strong panels, create 3 or 4 panels. Do not leave unused subplot slots blank.\n"
+            "- If one planned analysis is unsupported, drop that panel and rebuild the figure with fewer panels instead of keeping an empty slot.\n"
+            "- Execute the plotting code at top level. Do not define `main()` and do not use `if __name__ == '__main__'`.\n"
+            "- Do not assign placeholder values like `t_adata = ...`.\n"
+            "- Always check that required columns exist before plotting.\n"
+            "- Always inspect available subtype labels from `t_adata.obs[t_group_col]` before subsetting; never invent subtype names.\n"
+            "- Always inspect available embeddings from `t_adata.obsm.keys()`; use `X_umap` or `X_pca`, not guessed aliases.\n"
+            "- Never assume a helper returns a matrix shaped exactly as needed; transform it explicitly.\n"
+            "- Placeholder text such as 'No UMAP' or empty axes is a failure, not a success.\n"
+            "- Always create variable `fig` and save it to `HYP_FIG_PNG` and `HYP_FIG_PDF`.\n\n"
+            f"Broken code:\n{bad_code}"
+        )
+        response = litellm.completion(
+            model=hypothesis_model,
+            messages=[
+                {"role": "system", "content": "You fix Python figure-generation code. Return only executable Python."},
+                {"role": "user", "content": repair_prompt},
+            ],
+        )
+        return _strip_code_fences(response.choices[0].message.content or "")
+
+    base_namespace = {
+        "__builtins__": __builtins__,
+        "adata_rna": adata_rna,
+        "paired_adata": paired_adata,
+        "t_adata": t_adata,
+        "t_group_col": t_group_col,
+        "t_marker_df": t_marker_df,
+        "t_annotation_df": t_annotation_df,
+        "tcr_df": tcr_df,
+        "result_context": result_context,
+        "standard_baseline_summary": baseline_summary_text or result_context.get("standard_baseline_summary", ""),
+        "HYP_FIG_PNG": str(hyp_png),
+        "HYP_FIG_PDF": str(hyp_pdf),
+        "Path": Path,
+        "np": np,
+        "pd": pd,
+        "sc": sc,
+        "sns": sns,
+        "plt": plt,
+        "GridSpec": GridSpec,
+        "assign_clone_type_labels": assign_clone_type_labels,
+        "clone_type_distribution_table": _compat_clone_type_distribution_table,
+        "expression_frame": _compat_expression_frame,
+        "paired_tcr_subset": paired_tcr_subset,
+        "proportion_table": _compat_proportion_table,
+        "resolve_gene_names": resolve_gene_names,
+        "tissue_stratified_expansion_de": _compat_tissue_stratified_expansion_de,
+        "tumor_like_subset": tumor_like_subset,
+        "panel_label": panel_label,
+        "plot_categorical_embedding": _compat_plot_categorical_embedding,
+    }
+    current_code = initial_code
+    fig = None
+    exec_error = None
+    max_attempts = 8
+    for attempt in range(1, max_attempts + 1):
+        plt.close("all")
+        namespace = dict(base_namespace)
+        code_error = _validate_generated_code_text(current_code)
+        if code_error:
+            exec_error = f"Code validation failed:\n{code_error}"
+            fig = None
+        else:
+            fig, exec_error = _safe_exec_code(current_code, namespace)
+        if not exec_error:
+            validation_error = _validate_generated_figure(fig)
+            if not validation_error:
+                break
+            exec_error = f"Figure validation failed:\n{validation_error}"
+            if fig is not None:
+                plt.close(fig)
+        if attempt >= max_attempts:
+            raise RuntimeError(exec_error)
+        repaired_code = _repair_generated_code(current_code, exec_error)
+        current_code = repaired_code or current_code
+        code_path.write_text(current_code + "\n", encoding="utf-8")
+    if exec_error:
+        raise RuntimeError(exec_error)
+    if not hyp_png.exists() or not hyp_pdf.exists():
+        fig.savefig(hyp_png, dpi=300, bbox_inches="tight")
+        fig.savefig(hyp_pdf, bbox_inches="tight")
+    hyp_summary = output_dir / f"{figure_name}_hypothesis_summary.txt"
+    hyp_summary.write_text(
+        "\n".join(
+            [
+                f"Executed hypothesis: {result_context.get('executed_hypothesis', '') or 'none'}",
+                f"Approved priority question: {result_context.get('approved_priority_question', '') or 'none'}",
+                f"Approved strategy feedback: {result_context.get('approved_strategy_feedback', '') or 'none'}",
+                f"User feedback: {result_context.get('user_feedback', '') or 'none'}",
+                f"Analysis focus chosen by model: {response.analysis_focus}",
+                "Rationale:",
+                response.rationale,
+                f"Generated code: {code_path}",
+                "This hypothesis figure was generated by model-authored analysis code, grounded in baseline results, approved plan, and user feedback.",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    return hyp_png, hyp_pdf, hyp_summary, code_path, response.analysis_focus, response.rationale
 
 
 def _detect_plan_focus(result_context: dict[str, str], tokens: tuple[str, ...]) -> bool:
@@ -186,6 +731,216 @@ def _plan_requests_de_panel(result_context: dict[str, str]) -> bool:
     )
 
 
+def _plan_requests_expression_panel(result_context: dict[str, str]) -> bool:
+    return _detect_plan_focus(
+        result_context,
+        (
+            "differential expression",
+            "heatmap",
+            "candidate gene",
+            "driver gene",
+            "functional gene",
+            "gene expression",
+            "deg",
+            "marker",
+        ),
+    )
+
+
+def _plan_requests_clonotype_panel(result_context: dict[str, str]) -> bool:
+    return _detect_plan_focus(
+        result_context,
+        (
+            "clonotype",
+            "clone",
+            "tcr",
+            "repertoire",
+            "v gene",
+            "j gene",
+            "sharing",
+        ),
+    )
+
+
+def _context_blob(result_context: dict[str, str]) -> str:
+    return "\n".join(
+        [
+            result_context.get("executed_hypothesis", ""),
+            result_context.get("approved_priority_question", ""),
+            result_context.get("approved_plan_steps", ""),
+            result_context.get("approved_strategy_feedback", ""),
+            result_context.get("user_feedback", ""),
+            result_context.get("final_interpretation", ""),
+            result_context.get("notebook_text", ""),
+        ]
+    )
+
+
+def _normalized_tokens(text: str) -> list[str]:
+    return re.findall(r"[a-z0-9]+", (text or "").lower())
+
+
+def _select_focus_label(result_context: dict[str, str], t_subset: ad.AnnData, t_group_col: str) -> str | None:
+    if t_subset.n_obs == 0 or t_group_col not in t_subset.obs.columns:
+        return None
+    labels = [str(value) for value in t_subset.obs[t_group_col].dropna().astype(str).unique().tolist()]
+    if not labels:
+        return None
+    context = _context_blob(result_context)
+    context_tokens = set(_normalized_tokens(context))
+    best_label = None
+    best_score = -1.0
+    for label in labels:
+        label_tokens = [token for token in _normalized_tokens(label) if token not in {"t", "cell", "cells"}]
+        score = 0.0
+        normalized_label = " ".join(_normalized_tokens(label))
+        if normalized_label and normalized_label in " ".join(_normalized_tokens(context)):
+            score += 5.0
+        score += sum(1.0 for token in label_tokens if token in context_tokens)
+        if any(hint in label.lower() for hint in BAD_FOCUS_LABEL_HINTS):
+            score -= 10.0
+        if "expanded_clone" in t_subset.obs.columns:
+            try:
+                expanded_fraction = (
+                    t_subset.obs.assign(_group=t_subset.obs[t_group_col].astype(str))
+                    .groupby("_group", observed=False)["expanded_clone"]
+                    .mean()
+                    .get(label, 0.0)
+                )
+                score += float(expanded_fraction)
+            except Exception:
+                pass
+        score += float((t_subset.obs[t_group_col].astype(str) == label).sum()) / max(t_subset.n_obs, 1) * 0.25
+        if score > best_score:
+            best_label = label
+            best_score = score
+    return best_label or labels[0]
+
+
+def _select_focus_subset(
+    result_context: dict[str, str],
+    *,
+    adata: ad.AnnData,
+    t_subset: ad.AnnData,
+    t_group_col: str,
+    group_col: str,
+    tissue_col: str,
+) -> tuple[ad.AnnData, str]:
+    focus_label = _select_focus_label(result_context, t_subset, t_group_col)
+    if focus_label:
+        subset = t_subset[t_subset.obs[t_group_col].astype(str) == focus_label].copy()
+        if subset.n_obs >= 25:
+            return subset, focus_label
+    subset = (
+        _focus_cd8_subset(adata, group_col, tissue_col)
+        if _detect_plan_focus(result_context, ("cd8", "cd8+", "cytotoxic"))
+        else _focus_tcell_subset(adata, group_col, tissue_col)
+    )
+    label = "CD8+ T-cell subset" if _detect_plan_focus(result_context, ("cd8", "cd8+", "cytotoxic")) else "Focused T-cell subset"
+    return subset, label
+
+
+def _focus_fraction_summary(t_subset: ad.AnnData, focus_label: str, t_group_col: str, tissue_col: str) -> pd.DataFrame:
+    if t_subset.n_obs == 0 or t_group_col not in t_subset.obs.columns or tissue_col not in t_subset.obs.columns:
+        return pd.DataFrame()
+    frame = t_subset.obs[[t_group_col, tissue_col]].dropna().copy()
+    frame["is_focus"] = frame[t_group_col].astype(str) == str(focus_label)
+    summary = (
+        frame.groupby(tissue_col, observed=False)["is_focus"]
+        .mean()
+        .sort_values(ascending=False)
+        .reset_index()
+    )
+    return summary
+
+
+def _plot_focus_fraction(ax, summary: pd.DataFrame, tissue_col: str, title: str) -> None:
+    if summary.empty:
+        ax.axis("off")
+        return
+    sns.barplot(data=summary, x=tissue_col, y="is_focus", ax=ax, color="#6baed6")
+    sns.stripplot(data=summary, x=tissue_col, y="is_focus", ax=ax, color="#084594", size=5, alpha=0.8)
+    ax.set_title(title, fontsize=11)
+    ax.set_xlabel("")
+    ax.set_ylabel("Fraction within T cells")
+    ax.tick_params(axis="x", rotation=35)
+
+
+def _clone_type_mix_by_tissue(adata: ad.AnnData, tissue_col: str) -> pd.DataFrame:
+    if adata.n_obs == 0 or "cloneType" not in adata.obs.columns or tissue_col not in adata.obs.columns:
+        return pd.DataFrame()
+    frame = adata.obs[[tissue_col, "cloneType"]].dropna().copy()
+    if frame.empty:
+        return pd.DataFrame()
+    table = pd.crosstab(frame[tissue_col].astype(str), frame["cloneType"].astype(str))
+    denom = table.sum(axis=1).replace(0, 1)
+    return table.div(denom, axis=0)
+
+
+def _mean_expression_by_tissue(adata: ad.AnnData, genes: list[str], tissue_col: str) -> pd.DataFrame:
+    if adata.n_obs == 0 or tissue_col not in adata.obs.columns or not genes:
+        return pd.DataFrame()
+    try:
+        expr = expression_frame(adata, genes, obs_columns=[tissue_col]).groupby(tissue_col, observed=False).mean()
+    except Exception:
+        return pd.DataFrame()
+    return expr.T if not expr.empty else pd.DataFrame()
+
+
+def _select_contrast_tissues(result_context: dict[str, str], available_tissues: list[str]) -> tuple[str, str] | None:
+    tissues = [str(item) for item in available_tissues if str(item)]
+    if len(tissues) < 2:
+        return None
+    context = _context_blob(result_context).lower()
+    aliases = {
+        "primary_focus": ("primary_focus", "primary focus", "primary tumor", "primary"),
+        "metastasis": ("metastasis", "metastatic"),
+        "lymph_node": ("lymph_node", "lymph node"),
+        "pbmc": ("pbmc", "peripheral blood"),
+    }
+    scored: list[tuple[float, str]] = []
+    for tissue in tissues:
+        patterns = aliases.get(tissue.lower(), (tissue.lower(), tissue.lower().replace("_", " ")))
+        score = float(sum(context.count(pattern) for pattern in patterns))
+        scored.append((score, tissue))
+    scored.sort(key=lambda item: (-item[0], item[1]))
+    mentioned = [tissue for score, tissue in scored if score > 0]
+    if len(mentioned) >= 2:
+        return mentioned[0], mentioned[1]
+    preferred_pairs = [
+        ("primary_focus", "metastasis"),
+        ("PBMC", "lymph_node"),
+        ("pbmc", "lymph_node"),
+    ]
+    available_lookup = {tissue.lower(): tissue for tissue in tissues}
+    for left, right in preferred_pairs:
+        left_value = available_lookup.get(left.lower())
+        right_value = available_lookup.get(right.lower())
+        if left_value and right_value:
+            return left_value, right_value
+    return tissues[0], tissues[1]
+
+
+def _contrast_expression_table(
+    adata: ad.AnnData,
+    genes: list[str],
+    tissue_col: str,
+    contrast_tissues: tuple[str, str] | None,
+) -> pd.DataFrame:
+    if not contrast_tissues:
+        return pd.DataFrame()
+    left_tissue, right_tissue = contrast_tissues
+    if adata.n_obs == 0 or tissue_col not in adata.obs.columns or not genes:
+        return pd.DataFrame()
+    subset = adata[adata.obs[tissue_col].astype(str).isin([left_tissue, right_tissue])].copy()
+    if subset.n_obs == 0:
+        return pd.DataFrame()
+    expr = _mean_expression_by_tissue(subset, genes, tissue_col)
+    if expr.empty or left_tissue not in expr.columns or right_tissue not in expr.columns:
+        return pd.DataFrame()
+    return (expr[right_tissue] - expr[left_tissue]).to_frame(name=f"{right_tissue} - {left_tissue}")
+
+
 def _focus_cd8_subset(adata: ad.AnnData, group_col: str, tissue_col: str) -> ad.AnnData:
     subset = _focus_tcell_subset(adata, group_col, tissue_col)
     labels = subset.obs[group_col].astype(str).str.lower()
@@ -197,12 +952,26 @@ def _focus_cd8_subset(adata: ad.AnnData, group_col: str, tissue_col: str) -> ad.
 
 
 def _marker_genes_from_plan(result_context: dict[str, str], adata: ad.AnnData, top_n: int = 6) -> list[str]:
-    requested = resolve_gene_names(adata, EXHAUSTION_MARKER_CANDIDATES)
-    genes = list(dict.fromkeys(requested.values()))
-    for gene in _focus_genes(result_context, adata, top_n=top_n):
+    genes: list[str] = []
+    if _detect_plan_focus(result_context, ("exhaust", "pdcd1", "pd-1", "lag3", "havcr2", "tim-3", "tigit", "ctla4", "tox")):
+        requested = resolve_gene_names(adata, EXHAUSTION_MARKER_CANDIDATES)
+        genes.extend(list(dict.fromkeys(requested.values())))
+    for gene in _focus_genes(result_context, adata, top_n=max(top_n, 8)):
         if gene not in genes:
             genes.append(gene)
     return genes[:top_n]
+
+
+def _table_has_signal(table: pd.DataFrame, *, min_rows: int = 2, min_cols: int = 1, min_range: float = 0.15) -> bool:
+    if table.empty or table.shape[0] < min_rows or table.shape[1] < min_cols:
+        return False
+    numeric = table.select_dtypes(include=[np.number])
+    if numeric.empty:
+        return False
+    values = numeric.to_numpy(dtype=float)
+    if not np.isfinite(values).any():
+        return False
+    return float(np.nanmax(values) - np.nanmin(values)) >= min_range
 
 
 def _plot_marker_expression_by_tissue(
@@ -334,17 +1103,35 @@ def _plot_heatmap(ax, table: pd.DataFrame, title: str, cbar_label: str = "mean s
     ax.set_ylabel("")
 
 
-def _plot_stacked_bar(ax, table: pd.DataFrame, title: str) -> None:
+def _plot_stacked_bar(
+    ax,
+    table: pd.DataFrame,
+    title: str,
+    *,
+    show_legend: bool = True,
+    legend_title: str | None = None,
+) -> None:
     if table.empty:
         ax.text(0.5, 0.5, "No data", ha="center", va="center", transform=ax.transAxes)
         ax.set_title(title)
         ax.axis("off")
         return
-    table.plot(kind="bar", stacked=True, ax=ax, colormap="tab20", width=0.85, legend=False)
+    table.plot(kind="bar", stacked=True, ax=ax, colormap="tab20", width=0.85, legend=show_legend)
     ax.set_title(title, fontsize=11)
     ax.set_xlabel("")
     ax.set_ylabel("Fraction")
     ax.tick_params(axis="x", rotation=35)
+    if show_legend:
+        legend = ax.get_legend()
+        if legend is not None:
+            legend.set_bbox_to_anchor((1.02, 1.0))
+            legend._loc = 2
+            legend.set_frame_on(False)
+            legend.set_title(legend_title or "")
+            for text in legend.get_texts():
+                text.set_fontsize(7)
+            if legend.get_title() is not None:
+                legend.get_title().set_fontsize(8)
 
 
 def _standard_composition_table(adata: ad.AnnData, group_col: str, tissue_col: str, top_n_groups: int = 8) -> pd.DataFrame:
@@ -633,7 +1420,11 @@ def build_publication_figure(
     tcr_path: str | Path,
     output_dir: str | Path,
     figure_name: str = "scrt_publication_figure",
+    hypothesis_model: str = "gpt-4o",
+    baseline_summary_text: str = "",
+    prompt_dir: str | Path | None = None,
 ) -> FigureResult:
+    _load_figure_env_files(rna_h5ad_path, tcr_path, output_dir)
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     sns.set_theme(style="whitegrid", context="talk")
@@ -645,175 +1436,311 @@ def build_publication_figure(
     result_context = read_run_result_context(output_dir)
     hypothesis_text = result_context["executed_hypothesis"]
     approved_priority = result_context.get("approved_priority_question", "")
-    marker_csv_path = Path(rna_h5ad_path).resolve().with_name("cluster_markers.csv")
 
     paired = paired_tcr_subset(adata)
-    composition = _standard_composition_table(adata, group_col, tissue_col)
-    marker_heatmap = _cluster_marker_heatmap(adata, group_col, marker_csv_path)
-    expansion_heatmap = _expanded_fraction_table(paired, group_col, tissue_col) if paired.n_obs else pd.DataFrame()
-    clone_sharing = _tissue_clonotype_sharing(paired, tissue_col=tissue_col)
-    v_gene_heatmap = _v_gene_usage_heatmap(paired, tissue_col=tissue_col)
-    diversity_by_tissue = _tcr_diversity_by_sample_tissue(paired, tissue_col=tissue_col)
+    assign_clone_type_labels(paired)
+    global_prop = proportion_table(adata, group_col=group_col, tissue_col=tissue_col, normalize="index")
+    annotation_model = os.environ.get("SCRT_TCELL_ANNOTATION_MODEL", "gpt-4o")
+    try:
+        t_subset, t_marker_df, t_annotation_df = recluster_and_annotate_t_cells(
+            paired,
+            group_col=group_col,
+            model_name=annotation_model,
+        )
+    except Exception:
+        t_subset = paired.copy()
+        t_marker_df = pd.DataFrame()
+        t_annotation_df = pd.DataFrame()
+    t_group_col = "tcell_cluster_cell_type" if "tcell_cluster_cell_type" in t_subset.obs.columns else group_col
+    if t_subset.n_obs:
+        assign_clone_type_labels(t_subset)
+        if "cell_type" not in t_subset.obs.columns or t_subset.obs["cell_type"].astype(str).str.contains("T-cell cluster").all():
+            t_subset.obs["cell_type"] = t_subset.obs[t_group_col].astype(str)
+    t_prop = proportion_table(t_subset, group_col=t_group_col, tissue_col=tissue_col, normalize="index") if t_subset.n_obs else pd.DataFrame()
+    clone_mix = clone_type_distribution_table(t_subset, group_col=t_group_col, clone_type_col="cloneType") if t_subset.n_obs else pd.DataFrame()
 
-    summary_fig = plt.figure(figsize=(18, 24))
-    gs = GridSpec(4, 2, figure=summary_fig, hspace=0.42, wspace=0.24)
+    summary_fig = plt.figure(figsize=(24, 18))
+    gs = GridSpec(3, 2, figure=summary_fig, hspace=0.34, wspace=0.68)
 
     ax_a = summary_fig.add_subplot(gs[0, 0])
-    plot_categorical_embedding(ax_a, adata, color=group_col, title="scRNA UMAP with annotated cell types")
+    plot_categorical_embedding(
+        ax_a,
+        adata,
+        color=group_col,
+        title="scRNA UMAP with annotated cell types",
+        label_points=False,
+        show_legend=True,
+        legend_title="Cell type",
+    )
     panel_label(ax_a, "a")
 
     ax_b = summary_fig.add_subplot(gs[0, 1])
-    _plot_stacked_bar(ax_b, composition, "Cell composition across tissues")
+    _plot_stacked_bar(ax_b, global_prop, "Cell composition across tissues", show_legend=True, legend_title="Cell type")
     panel_label(ax_b, "b")
 
     ax_c = summary_fig.add_subplot(gs[1, 0])
-    plot_categorical_embedding(ax_c, paired if paired.n_obs else adata, color="expanded_label", title="Paired cells: clonal expansion overlay")
+    plot_categorical_embedding(
+        ax_c,
+        t_subset if t_subset.n_obs else paired,
+        color=t_group_col if t_subset.n_obs else group_col,
+        title="Reclustered T-cell UMAP with LLM-defined subtype annotations",
+        label_points=False,
+        show_legend=True,
+        legend_title="T-cell subtype",
+    )
     panel_label(ax_c, "c")
 
     ax_d = summary_fig.add_subplot(gs[1, 1])
-    _plot_heatmap(ax_d, expansion_heatmap, "Expanded clone fraction by cell type and tissue", cbar_label="expanded fraction")
+    _plot_stacked_bar(ax_d, t_prop, "T-cell subtype composition across tissues", show_legend=True, legend_title="T-cell subtype")
     panel_label(ax_d, "d")
 
     ax_e = summary_fig.add_subplot(gs[2, 0])
-    _plot_clone_size_distribution(ax_e, paired, tissue_col)
+    plot_categorical_embedding(
+        ax_e,
+        t_subset if t_subset.n_obs else paired,
+        color="cloneType" if t_subset.n_obs and "cloneType" in t_subset.obs.columns else group_col,
+        title="T-cell cloneType UMAP",
+        label_points=False,
+        show_legend=True,
+        legend_title="cloneType",
+    )
     panel_label(ax_e, "e")
 
     ax_f = summary_fig.add_subplot(gs[2, 1])
-    _plot_heatmap(ax_f, clone_sharing, "Clonotype sharing across tissues", cbar_label="Jaccard overlap", cmap="crest")
+    _plot_stacked_bar(ax_f, clone_mix, "cloneType composition across T-cell subtypes", show_legend=True, legend_title="cloneType")
     panel_label(ax_f, "f")
 
-    ax_g = summary_fig.add_subplot(gs[3, 0])
-    _plot_heatmap(ax_g, marker_heatmap, "Top scRNA marker heatmap", cbar_label="mean RNA")
-    panel_label(ax_g, "g")
-
-    ax_h = summary_fig.add_subplot(gs[3, 1])
-    _plot_heatmap(ax_h, v_gene_heatmap, "Top V gene usage across tissues", cbar_label="column fraction")
-    panel_label(ax_h, "h")
-
-    summary_fig.suptitle("Standard scRNA + scTCR summary figure", fontsize=18, y=0.995)
+    summary_fig.suptitle("Standard scRNA + scTCR baseline figure", fontsize=18, y=0.995)
     summary_fig.tight_layout(rect=[0, 0, 1, 0.985])
     png_path, pdf_path, summary_path = save_figure_bundle(summary_fig, output_dir, figure_name)
 
-    focus_subset = (
-        _focus_cd8_subset(adata, group_col, tissue_col)
-        if _detect_plan_focus(result_context, ("cd8", "cd8+", "cytotoxic"))
-        else _focus_tcell_subset(adata, group_col, tissue_col)
+    diversity_by_tissue = _tcr_diversity_by_sample_tissue(paired, tissue_col=tissue_col)
+    normalize_tcr_columns(load_tcr_table(tcr_path)).copy()
+
+    focus_subset, focus_label = _select_focus_subset(
+        result_context,
+        adata=adata,
+        t_subset=t_subset,
+        t_group_col=t_group_col,
+        group_col=group_col,
+        tissue_col=tissue_col,
     )
-    focus_label = "CD8+ T-cell" if _detect_plan_focus(result_context, ("cd8", "cd8+", "cytotoxic")) else "Focused T-cell"
     plan_requests_pseudotime = _plan_requests_pseudotime(result_context)
+    plan_requests_expression = _plan_requests_expression_panel(result_context)
+    plan_requests_clonotype = _plan_requests_clonotype_panel(result_context)
     pseudotime_subset = _compute_pseudotime(focus_subset) if plan_requests_pseudotime else None
     focus_genes = _focus_genes(result_context, focus_subset if focus_subset.n_obs else adata)
     plan_marker_genes = _marker_genes_from_plan(result_context, focus_subset if focus_subset.n_obs else adata)
+    focus_fraction = _focus_fraction_summary(t_subset, focus_label, t_group_col, tissue_col) if t_subset.n_obs else pd.DataFrame()
+    focus_clone_mix = _clone_type_mix_by_tissue(focus_subset, tissue_col)
+    contrast_tissues = _select_contrast_tissues(
+        result_context,
+        sorted(focus_subset.obs[tissue_col].astype(str).dropna().unique().tolist()) if focus_subset.n_obs and tissue_col in focus_subset.obs.columns else [],
+    )
+    marker_expression = _mean_expression_by_tissue(focus_subset, plan_marker_genes, tissue_col)
+    contrast_expression = _contrast_expression_table(focus_subset, plan_marker_genes, tissue_col, contrast_tissues)
     trend_heatmap = pd.DataFrame()
     clone_by_bin = pd.DataFrame()
     if pseudotime_subset is not None and focus_genes:
         trend_heatmap, clone_by_bin = _pseudotime_bin_table(pseudotime_subset, focus_genes[:6], tissue_col)
     focus_de = _focused_de_heatmap(focus_subset, tissue_col=tissue_col) if focus_subset.n_obs else pd.DataFrame()
-    focus_clone = _expanded_fraction_table(focus_subset, tissue_col, group_col) if focus_subset.n_obs else pd.DataFrame()
+    focus_clone = _expanded_fraction_table(
+        focus_subset,
+        tissue_col,
+        "cloneType" if focus_subset.n_obs and "cloneType" in focus_subset.obs.columns else group_col,
+    ) if focus_subset.n_obs else pd.DataFrame()
+    focus_clone_sharing = _tissue_clonotype_sharing(focus_subset, tissue_col=tissue_col) if focus_subset.n_obs else pd.DataFrame()
+    focus_v_gene_usage = _v_gene_usage_heatmap(focus_subset, tissue_col=tissue_col, top_n=8) if focus_subset.n_obs else pd.DataFrame()
 
-    hyp_fig = plt.figure(figsize=(18, 22))
-    hyp_gs = GridSpec(3, 2, figure=hyp_fig, hspace=0.36, wspace=0.24)
-    panel_axes = [
-        hyp_fig.add_subplot(hyp_gs[0, 0]),
-        hyp_fig.add_subplot(hyp_gs[0, 1]),
-        hyp_fig.add_subplot(hyp_gs[1, 0]),
-        hyp_fig.add_subplot(hyp_gs[1, 1]),
-        hyp_fig.add_subplot(hyp_gs[2, 0]),
-        hyp_fig.add_subplot(hyp_gs[2, 1]),
-    ]
-
-    panel_plan: list[str] = []
-    if _plan_requests_focus_subset(result_context):
-        panel_plan.append("focus_subset")
-    if _plan_requests_diversity_panel(result_context):
-        panel_plan.extend(["diversity", "clone_size"])
-    if _plan_requests_de_panel(result_context):
-        panel_plan.extend(["marker_expression", "marker_de"])
-    if plan_requests_pseudotime:
-        panel_plan.extend(["pseudotime_embedding", "pseudotime_support"])
-
-    supplemental_order = [
-        "focus_subset",
-        "marker_expression",
-        "marker_de",
-        "pseudotime_embedding",
-        "pseudotime_support",
-        "focused_clone",
-        "diversity",
-        "clone_size",
-    ]
-    for key in supplemental_order:
-        if key not in panel_plan:
-            panel_plan.append(key)
-    panel_plan = panel_plan[:6]
-
-    for idx, (ax, panel_key) in enumerate(zip(panel_axes, panel_plan)):
-        if panel_key == "focus_subset":
-            plot_categorical_embedding(
-                ax,
-                focus_subset if focus_subset.n_obs else adata,
-                color=tissue_col if tissue_col in (focus_subset.obs.columns if focus_subset.n_obs else adata.obs.columns) else group_col,
-                title=f"{focus_label} embedding by tissue context",
+    panel_specs: list[tuple[str, callable]] = []
+    focus_basis = "X_umap" if focus_subset.n_obs and "X_umap" in focus_subset.obsm else ("X_pca" if focus_subset.n_obs and "X_pca" in focus_subset.obsm else "")
+    if focus_basis:
+        panel_specs.append(
+            (
+                "focus_embedding",
+                lambda fig, ax: plot_categorical_embedding(
+                    ax,
+                    focus_subset,
+                    color=tissue_col if tissue_col in focus_subset.obs.columns else t_group_col,
+                    title=f"{focus_label} embedding by tissue context",
+                    basis=focus_basis,
+                    label_points=False,
+                    show_legend=True,
+                    legend_title="Tissue" if tissue_col in focus_subset.obs.columns else t_group_col,
+                ),
             )
-        elif panel_key == "diversity":
-            _plot_tcr_diversity_by_tissue(ax, diversity_by_tissue, tissue_col)
-        elif panel_key == "clone_size":
-            _plot_clone_size_distribution(ax, paired, tissue_col)
-        elif panel_key == "marker_expression":
-            _plot_marker_expression_by_tissue(
-                ax,
-                focus_subset if focus_subset.n_obs else adata,
-                plan_marker_genes,
-                tissue_col,
-                f"{focus_label} marker expression by tissue",
+        )
+    if not focus_fraction.empty:
+        panel_specs.append(
+            (
+                "focus_fraction",
+                lambda fig, ax: _plot_focus_fraction(ax, focus_fraction, tissue_col, f"{focus_label} abundance across tissues"),
             )
-        elif panel_key == "marker_de":
-            _plot_plan_de_heatmap(
-                ax,
-                focus_subset if focus_subset.n_obs else adata,
-                plan_marker_genes,
-                tissue_col,
-                f"{focus_label} marker contrast: metastasis vs primary",
+        )
+    if not focus_clone_mix.empty and plan_requests_clonotype:
+        panel_specs.append(
+            (
+                "clone_mix",
+                lambda fig, ax: _plot_stacked_bar(ax, focus_clone_mix, f"{focus_label} cloneType composition across tissues", show_legend=True, legend_title="cloneType"),
             )
-        elif panel_key == "pseudotime_embedding":
-            if pseudotime_subset is not None and "dpt_pseudotime" in pseudotime_subset.obs.columns:
-                basis = "X_umap" if "X_umap" in pseudotime_subset.obsm else "X_pca"
-                coords = pseudotime_subset.obsm[basis][:, :2]
+        )
+    if not _clone_size_summary(focus_subset, tissue_col).empty and plan_requests_clonotype:
+        panel_specs.append(
+            (
+                "clone_size",
+                lambda fig, ax: _plot_clone_size_distribution(ax, focus_subset, tissue_col),
+            )
+        )
+    if plan_requests_expression and _table_has_signal(marker_expression, min_rows=2, min_cols=2, min_range=0.2):
+        panel_specs.append(
+            (
+                "marker_expression",
+                lambda fig, ax: _plot_heatmap(ax, marker_expression, f"{focus_label} marker expression by tissue", cbar_label="mean RNA", cmap="magma"),
+            )
+        )
+    if plan_requests_expression and _table_has_signal(contrast_expression, min_rows=2, min_cols=1, min_range=0.2):
+        contrast_title = f"{focus_label} marker contrast"
+        if contrast_tissues:
+            contrast_title = f"{focus_label} marker contrast: {contrast_tissues[1]} vs {contrast_tissues[0]}"
+        panel_specs.append(
+            (
+                "marker_contrast",
+                lambda fig, ax: _plot_heatmap(ax, contrast_expression, contrast_title, cbar_label="mean RNA delta", cmap="vlag"),
+            )
+        )
+    elif plan_requests_expression and _table_has_signal(focus_de, min_rows=2, min_cols=2, min_range=0.25):
+        panel_specs.append(
+            (
+                "focused_de",
+                lambda fig, ax: _plot_heatmap(ax, focus_de, f"{focus_label} differential expression support", cbar_label="logFC", cmap="vlag"),
+            )
+        )
+    if plan_requests_pseudotime and pseudotime_subset is not None and "dpt_pseudotime" in pseudotime_subset.obs.columns:
+        pseudo_basis = "X_umap" if "X_umap" in pseudotime_subset.obsm else ("X_pca" if "X_pca" in pseudotime_subset.obsm else "")
+        if pseudo_basis:
+            def _render_pseudotime(fig, ax):
+                coords = pseudotime_subset.obsm[pseudo_basis][:, :2]
                 values = pseudotime_subset.obs["dpt_pseudotime"].astype(float).to_numpy()
-                scatter = ax.scatter(
-                    coords[:, 0],
-                    coords[:, 1],
-                    c=values,
-                    cmap="viridis",
-                    s=14,
-                    alpha=0.85,
-                    linewidths=0,
-                )
-                cbar = hyp_fig.colorbar(scatter, ax=ax, fraction=0.046, pad=0.04)
+                scatter = ax.scatter(coords[:, 0], coords[:, 1], c=values, cmap="viridis", s=14, alpha=0.85, linewidths=0)
+                cbar = fig.colorbar(scatter, ax=ax, fraction=0.046, pad=0.04)
                 cbar.set_label("dpt_pseudotime")
-                ax.set_title(
-                    f"{focus_label} { 'UMAP' if basis == 'X_umap' else 'PCA'} pseudotime ordering",
-                    fontsize=11,
+                ax.set_title(f"{focus_label} {'UMAP' if pseudo_basis == 'X_umap' else 'PCA'} pseudotime ordering", fontsize=11)
+                ax.set_xlabel("UMAP1" if pseudo_basis == "X_umap" else "PC1")
+                ax.set_ylabel("UMAP2" if pseudo_basis == "X_umap" else "PC2")
+            panel_specs.append(("pseudotime_embedding", _render_pseudotime))
+        if not clone_by_bin.empty:
+            panel_specs.append(
+                (
+                    "pseudotime_clone_support",
+                    lambda fig, ax: _plot_heatmap(ax, clone_by_bin.T, "Expanded clone fraction across pseudotime bins", cbar_label="expanded fraction", cmap="crest"),
                 )
-                ax.set_xlabel("UMAP1" if basis == "X_umap" else "PC1")
-                ax.set_ylabel("UMAP2" if basis == "X_umap" else "PC2")
-            else:
-                clone_sharing_focus = _tissue_clonotype_sharing(focus_subset, tissue_col=tissue_col)
-                _plot_heatmap(ax, clone_sharing_focus, "Focused clonotype sharing", cbar_label="Jaccard overlap", cmap="crest")
-        elif panel_key == "pseudotime_support":
-            if not clone_by_bin.empty:
-                _plot_heatmap(ax, clone_by_bin.T, "Expanded clone fraction across pseudotime bins", cbar_label="expanded fraction", cmap="crest")
-            elif not trend_heatmap.empty:
-                _plot_heatmap(ax, trend_heatmap, "Marker dynamics along pseudotime", cbar_label="mean RNA", cmap="rocket")
-            else:
-                _plot_heatmap(ax, pd.DataFrame(), "Pseudotime support unavailable")
-        else:
-            _plot_heatmap(ax, focus_clone, "Expanded clone support in focused subset", cbar_label="expanded fraction")
-        panel_label(ax, chr(ord("a") + idx))
+            )
+        elif not trend_heatmap.empty:
+            panel_specs.append(
+                (
+                    "pseudotime_marker_support",
+                    lambda fig, ax: _plot_heatmap(ax, trend_heatmap, "Marker dynamics along pseudotime", cbar_label="mean RNA", cmap="rocket"),
+                )
+            )
+    if not focus_clone.empty and plan_requests_clonotype:
+        panel_specs.append(
+            (
+                "expanded_clone_support",
+                lambda fig, ax: _plot_heatmap(ax, focus_clone, f"{focus_label} expanded clone support", cbar_label="expanded fraction", cmap="crest"),
+            )
+        )
+    if not diversity_by_tissue.empty and (_plan_requests_diversity_panel(result_context) or plan_requests_clonotype):
+        panel_specs.append(
+            (
+                "diversity",
+                lambda fig, ax: _plot_tcr_diversity_by_tissue(ax, diversity_by_tissue, tissue_col),
+            )
+        )
+    if plan_requests_clonotype and _table_has_signal(focus_clone_sharing, min_rows=2, min_cols=2, min_range=0.05):
+        panel_specs.append(
+            (
+                "clone_sharing",
+                lambda fig, ax: _plot_heatmap(ax, focus_clone_sharing, f"{focus_label} clonotype sharing across tissues", cbar_label="Jaccard overlap", cmap="crest"),
+            )
+        )
+    if plan_requests_clonotype and _table_has_signal(focus_v_gene_usage, min_rows=3, min_cols=2, min_range=0.05):
+        panel_specs.append(
+            (
+                "v_gene_usage",
+                lambda fig, ax: _plot_heatmap(ax, focus_v_gene_usage, f"{focus_label} V gene usage across tissues", cbar_label="column fraction", cmap="mako"),
+            )
+        )
+    if not panel_specs:
+        panel_specs.append(
+            (
+                "tcell_overview",
+                lambda fig, ax: plot_categorical_embedding(
+                    ax,
+                    t_subset if t_subset.n_obs else paired,
+                    color=t_group_col if t_subset.n_obs else group_col,
+                    title="Focused T-cell subtype overview",
+                    label_points=False,
+                    show_legend=True,
+                    legend_title="T-cell subtype",
+                ),
+            )
+        )
 
-    hyp_fig.suptitle("Hypothesis-driven scRNA + scTCR figure", fontsize=18, y=0.995)
-    hyp_fig.tight_layout(rect=[0, 0, 1, 0.985])
-    hyp_png, hyp_pdf, hyp_summary = save_figure_bundle(hyp_fig, output_dir, f"{figure_name}_hypothesis")
+    hypothesis_pages: list[tuple[Path, Path]] = []
+    max_panels_per_page = 6
+    panel_chunks = [panel_specs[idx: idx + max_panels_per_page] for idx in range(0, len(panel_specs), max_panels_per_page)]
+    hyp_png = None
+    hyp_pdf = None
+    hyp_summary = output_dir / f"{figure_name}_hypothesis_summary.txt"
+    for page_index, chunk in enumerate(panel_chunks, start=1):
+        n_panels = len(chunk)
+        ncols = 2 if n_panels > 1 else 1
+        nrows = int(np.ceil(n_panels / ncols))
+        hyp_fig, axes = plt.subplots(nrows=nrows, ncols=ncols, figsize=(18, max(7, 6 * nrows)))
+        panel_axes = np.atleast_1d(axes).ravel().tolist()
+        for idx, (ax, (_, renderer)) in enumerate(zip(panel_axes, chunk)):
+            renderer(hyp_fig, ax)
+            panel_label(ax, chr(ord("a") + idx))
+        for ax in panel_axes[n_panels:]:
+            ax.remove()
+        hyp_fig.suptitle("Hypothesis-driven scRNA + scTCR figure", fontsize=18, y=0.995)
+        hyp_fig.tight_layout(rect=[0, 0, 1, 0.985])
+        page_name = f"{figure_name}_hypothesis" if page_index == 1 else f"{figure_name}_hypothesis_page{page_index}"
+        page_png, page_pdf, _ = save_figure_bundle(hyp_fig, output_dir, page_name)
+        hypothesis_pages.append((page_png, page_pdf))
+        if page_index == 1:
+            hyp_png, hyp_pdf = page_png, page_pdf
+    for stale_path in (
+        output_dir / f"{figure_name}_hypothesis_generated_code.py",
+        output_dir / f"{figure_name}_hypothesis_generated_plan.txt",
+    ):
+        if stale_path.exists():
+            stale_path.unlink()
+    hypothesis_generation_note = (
+        f"Result-driven hypothesis figure built directly from executed results for focus subset: {focus_label}. "
+        f"Panels generated: {len(panel_specs)} across {len(panel_chunks)} page(s)."
+    )
+    hyp_summary.write_text(
+        "\n".join(
+            [
+                f"Executed hypothesis: {hypothesis_text or 'none'}",
+                f"Approved priority question: {approved_priority or 'none'}",
+                f"Approved strategy feedback: {result_context.get('approved_strategy_feedback', '') or 'none'}",
+                f"User feedback: {result_context.get('user_feedback', '') or 'none'}",
+                f"Focus subset: {focus_label}",
+                f"Contrast tissues: {contrast_tissues[0]} vs {contrast_tissues[1]}" if contrast_tissues else "Contrast tissues: none",
+                f"Panels generated: {len(panel_specs)}",
+                f"Hypothesis figure pages: {len(panel_chunks)}",
+                "Panel order: " + ", ".join(name for name, _ in panel_specs),
+                "This hypothesis figure was generated directly from approved plan context and executed analysis results; no secondary model-authored figure code was used.",
+                *[
+                    f"Page {page_idx}: {page_png}"
+                    for page_idx, (page_png, _) in enumerate(hypothesis_pages, start=1)
+                ],
+            ]
+        ),
+        encoding="utf-8",
+    )
 
     summary_path.write_text(
         "\n".join(
@@ -827,23 +1754,12 @@ def build_publication_figure(
                 pseudotime_used=pseudotime_subset is not None,
             )
             + [
+                "Standard figure layout: baseline six-panel figure (global UMAP, global composition, T-cell reclustering UMAP, T-cell composition, cloneType UMAP, cloneType composition).",
+                hypothesis_generation_note,
                 f"Summary figure PNG: {png_path}",
                 f"Summary figure PDF: {pdf_path}",
                 f"Hypothesis figure PNG: {hyp_png}",
                 f"Hypothesis figure PDF: {hyp_pdf}",
-            ]
-        ),
-        encoding="utf-8",
-    )
-    hyp_summary.write_text(
-        "\n".join(
-            [
-                f"Executed hypothesis: {hypothesis_text or 'none'}",
-                f"Approved priority question: {approved_priority or 'none'}",
-                f"Approved strategy feedback: {result_context.get('approved_strategy_feedback', '') or 'none'}",
-                f"Focus genes: {', '.join(focus_genes) or 'none'}",
-                f"Pseudotime used: {'yes' if pseudotime_subset is not None else 'no'}",
-                "This figure is built from the approved plan, the executed hypothesis, and focused RNA+TCR evidence panels.",
             ]
         ),
         encoding="utf-8",

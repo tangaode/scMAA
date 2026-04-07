@@ -122,6 +122,58 @@ def _analysis_mentions_plan_items(plan: "AnalysisPlan", required_items: list[str
     return True
 
 
+def _first_step_matches_hypothesis(plan: "AnalysisPlan") -> bool:
+    target_text = "\n".join(
+        [
+            plan.hypothesis,
+            plan.priority_question,
+            plan.evidence_goal,
+        ]
+    )
+    step_text = "\n".join(
+        [
+            plan.first_step_code,
+            plan.code_description,
+            "\n".join(plan.analysis_plan[:2]),
+        ]
+    )
+    target_tokens = _extract_plan_tokens(target_text)
+    step_tokens = _extract_plan_tokens(step_text)
+    if not target_tokens:
+        return True
+    overlap = target_tokens & step_tokens
+    if len(overlap) >= 2:
+        return True
+    critical_tokens = {
+        token
+        for token in target_tokens
+        if token in {
+            "clone",
+            "paired_subset",
+            "tumor_subset",
+            "differential_expression",
+            "heatmap",
+            "pseudotime",
+            "t_cell",
+            "metastasis",
+            "primary_focus",
+            "lymph_node",
+            "pbmc",
+            "exhausted",
+            "cytotoxic",
+            "regulatory",
+            "effector",
+            "memory",
+            "xbp1",
+            "pdcd1",
+            "lag3",
+            "havcr2",
+            "tigit",
+        }
+    }
+    return bool(critical_tokens & step_tokens)
+
+
 class AnalysisPlan(BaseModel):
     hypothesis: str = Field(description="Specific and testable hypothesis.")
     analysis_type: str = Field(description="One of: rna_only, tcr_only, joint.")
@@ -179,6 +231,9 @@ class HypothesisGenerator:
         tcr_summary: str,
         joint_summary: str,
         validation_summary: str,
+        standard_baseline_summary: str,
+        baseline_planning_context: str,
+        baseline_tcell_labels: list[str],
         context_summary: str,
         literature_summary: str,
         literature_candidates_summary: str,
@@ -197,6 +252,9 @@ class HypothesisGenerator:
         self.tcr_summary = tcr_summary
         self.joint_summary = joint_summary
         self.validation_summary = validation_summary
+        self.standard_baseline_summary = standard_baseline_summary
+        self.baseline_planning_context = baseline_planning_context
+        self.baseline_tcell_labels = baseline_tcell_labels
         self.context_summary = context_summary
         self.literature_summary = literature_summary
         self.literature_candidates_summary = literature_candidates_summary
@@ -207,6 +265,60 @@ class HypothesisGenerator:
         self.deepresearch_background = deepresearch_background
         self.log_prompts = log_prompts
         self.client = instructor.from_litellm(litellm.completion)
+
+    def _baseline_context_for_prompt(self) -> str:
+        return self.baseline_planning_context or self.standard_baseline_summary or "No baseline summary available."
+
+    def _baseline_label_block(self) -> str:
+        if not self.baseline_tcell_labels:
+            return "No exact baseline T-cell subset labels were extracted."
+        return "\n".join(f"- {label}" for label in self.baseline_tcell_labels)
+
+    def _normalize_plan_output(self, plan: AnalysisPlan) -> AnalysisPlan:
+        code = (plan.first_step_code or "").strip()
+        if "\\n" in code and "\n" not in code:
+            code = code.replace("\\n", "\n")
+        if "\\t" in code and "\t" not in code:
+            code = code.replace("\\t", "\t")
+        code_lines = []
+        for line in code.splitlines():
+            if line.strip().startswith("```"):
+                continue
+            code_lines.append(line)
+        plan.first_step_code = "\n".join(code_lines).strip()
+        return plan
+
+    def _labels_mentioned_in_text(self, text: str) -> set[str]:
+        lowered = (text or "").lower()
+        return {label for label in self.baseline_tcell_labels if label.lower() in lowered}
+
+    def _plan_focus_is_consistent(self, plan: AnalysisPlan) -> bool:
+        hypothesis_labels = self._labels_mentioned_in_text(plan.hypothesis)
+        if not hypothesis_labels:
+            return True
+        supporting_text = "\n".join(
+            [
+                plan.priority_question,
+                plan.evidence_goal,
+                "\n".join(plan.analysis_plan),
+                plan.first_step_code,
+                plan.code_description,
+                plan.summary,
+            ]
+        )
+        supporting_labels = self._labels_mentioned_in_text(supporting_text)
+        return bool(hypothesis_labels & supporting_labels)
+
+    def _code_uses_valid_baseline_labels(self, plan: AnalysisPlan) -> bool:
+        if not self.baseline_tcell_labels:
+            return True
+        code = plan.first_step_code or ""
+        matches = re.findall(r"cluster_cell_type'\]\s*==\s*['\"]([^'\"]+)['\"]", code)
+        matches += re.findall(r'cluster_cell_type"\]\s*==\s*[\'"]([^\'"]+)[\'"]', code)
+        if not matches:
+            return True
+        baseline_lookup = {label.lower() for label in self.baseline_tcell_labels}
+        return all(match.strip().lower() in baseline_lookup for match in matches)
 
     def _read_prompt(self, name: str) -> str:
         return (self.prompt_dir / name).read_text(encoding="utf-8")
@@ -240,6 +352,14 @@ class HypothesisGenerator:
             past_analyses=past_analyses or "No previous analyses.",
             user_feedback=user_feedback.strip() or "No extra user feedback.",
         )
+        prompt += (
+            "\n\nBaseline planning context:\n"
+            + self._baseline_context_for_prompt()
+            + "\n\nAvailable exact baseline T-cell subset labels:\n"
+            + self._baseline_label_block()
+            + "\n\nUse the baseline planning context as the mandatory starting point. "
+              "Propose new hypotheses only after interpreting these fixed analyses."
+        )
         if self.log_prompts:
             self.logger.log_prompt("user", prompt, "candidate_hypotheses")
         return self._complete_structured(
@@ -271,6 +391,12 @@ class HypothesisGenerator:
             context_summary=self.context_summary,
             past_analyses=past_analyses or "No previous analyses.",
         )
+        prompt += (
+            "\n\nBaseline planning context:\n"
+            + self._baseline_context_for_prompt()
+            + "\n\nAvailable exact baseline T-cell subset labels:\n"
+            + self._baseline_label_block()
+        )
         if self.log_prompts:
             self.logger.log_prompt("user", prompt, "revise_hypothesis")
         return self._complete_structured(
@@ -297,15 +423,24 @@ class HypothesisGenerator:
             selected_literature_seed="No literature seed has been selected.",
             deepresearch_background=self.deepresearch_background or "No additional Deep Research background.",
         )
+        prompt += (
+            "\n\nBaseline planning context:\n"
+            + self._baseline_context_for_prompt()
+            + "\n\nAvailable exact baseline T-cell subset labels:\n"
+            + self._baseline_label_block()
+            + "\n\nYou must treat the baseline planning context as already-observed evidence. "
+              "The novel hypothesis should be proposed only after interpreting those fixed baseline analyses."
+        )
         if self.log_prompts:
             self.logger.log_prompt("user", prompt, "initial_analysis")
-        return self._complete_structured(
+        result = self._complete_structured(
             [
                 {"role": "system", "content": self.coding_system_prompt},
                 {"role": "user", "content": prompt},
             ],
             AnalysisPlan,
         )
+        return self._normalize_plan_output(result)
 
     def select_literature_hypothesis(
         self,
@@ -322,6 +457,12 @@ class HypothesisGenerator:
             literature_candidates_summary=self.literature_candidates_summary,
             context_summary=self.context_summary,
             past_analyses=past_analyses or "No previous analyses.",
+        )
+        prompt += (
+            "\n\nBaseline planning context:\n"
+            + self._baseline_context_for_prompt()
+            + "\n\nAvailable exact baseline T-cell subset labels:\n"
+            + self._baseline_label_block()
         )
         if self.log_prompts:
             self.logger.log_prompt("user", prompt, "select_literature_hypothesis")
@@ -394,35 +535,82 @@ class HypothesisGenerator:
                 selected_literature_seed=seed_context,
                 user_strategy_feedback=strategy_feedback.strip() or "No extra strategy feedback.",
             )
+            
 
         normalized_feedback = user_strategy_feedback.strip()
         prompt = _make_prompt(normalized_feedback)
+        prompt += (
+            "\n\nBaseline planning context:\n"
+            + self._baseline_context_for_prompt()
+            + "\n\nAvailable exact baseline T-cell subset labels:\n"
+            + self._baseline_label_block()
+            + "\n\nBefore finalizing the plan, interpret the fixed baseline analyses. "
+              "The plan should build on those results, especially T-cell subsets that are new, under-studied, "
+              "tissue-skewed, or clonally expanded. If the plan refers to one of these subsets in `first_step_code`, "
+              "use the exact label spelling from the baseline list instead of inventing a new name or replacing spaces with underscores."
+        )
         if self.log_prompts:
             self.logger.log_prompt("user", prompt, "seeded_hypothesis")
-        result = self._complete_structured(
+        result = self._normalize_plan_output(self._complete_structured(
             [
                 {"role": "system", "content": self.coding_system_prompt},
                 {"role": "user", "content": prompt},
             ],
             AnalysisPlan,
-        )
-        if normalized_feedback and not _plan_mentions_strategy(result, normalized_feedback):
-            retry_feedback = (
-                normalized_feedback
-                + "\n\nThe previous draft plan did not visibly satisfy the user strategy feedback. "
-                  "Revise the plan so the requested analysis elements are explicit in the priority question, "
-                  "remaining plan, and summary."
-            )
+        ))
+        for retry_idx in range(2):
+            needs_retry = False
+            retry_feedback = normalized_feedback
+            if normalized_feedback and not _plan_mentions_strategy(result, normalized_feedback):
+                needs_retry = True
+                retry_feedback = (
+                    normalized_feedback
+                    + "\n\nThe previous draft plan did not visibly satisfy the user strategy feedback. "
+                      "Revise the plan so the requested analysis elements are explicit in the priority question, "
+                      "remaining plan, and summary."
+                )
+            if not _first_step_matches_hypothesis(result):
+                needs_retry = True
+                retry_feedback = (
+                    (retry_feedback + "\n\n") if retry_feedback else ""
+                    + "The previous draft plan was not tightly aligned: `first_step_code` did not clearly operationalize "
+                      "the same biological subset, tissue contrast, clone behavior, or candidate genes described in the "
+                      "hypothesis, priority question, and evidence goal. Revise the plan so the first step directly tests "
+                      "the generated hypothesis rather than a neighboring analysis."
+                )
+            if not self._plan_focus_is_consistent(result):
+                needs_retry = True
+                retry_feedback = (
+                    (retry_feedback + "\n\n") if retry_feedback else ""
+                    + "The previous draft plan was internally inconsistent: the hypothesis named one biological subset, "
+                      "but the priority question, evidence goal, plan steps, or first-step code shifted to a different subset. "
+                      "Keep one consistent biological focus across hypothesis, priority question, evidence goal, and code."
+                )
+            if not self._code_uses_valid_baseline_labels(result):
+                needs_retry = True
+                retry_feedback = (
+                    (retry_feedback + "\n\n") if retry_feedback else ""
+                    + "The previous draft code used a subset label that does not exactly match the available baseline labels. "
+                      "If `first_step_code` filters `cluster_cell_type`, use one of the exact baseline labels verbatim."
+                )
+            if not needs_retry:
+                break
             retry_prompt = _make_prompt(retry_feedback)
+            retry_prompt += (
+                "\n\nBaseline planning context:\n"
+                + self._baseline_context_for_prompt()
+                + "\n\nAvailable exact baseline T-cell subset labels:\n"
+                + self._baseline_label_block()
+            )
             if self.log_prompts:
-                self.logger.log_prompt("user", retry_prompt, "seeded_hypothesis_retry")
-            result = self._complete_structured(
+                self.logger.log_prompt("user", retry_prompt, f"seeded_hypothesis_retry_{retry_idx + 1}")
+            result = self._normalize_plan_output(self._complete_structured(
                 [
                     {"role": "system", "content": self.coding_system_prompt},
                     {"role": "user", "content": retry_prompt},
                 ],
                 AnalysisPlan,
-            )
+            ))
         result.hypothesis = seeded_hypothesis
         self.logger.log_response(
             (
@@ -465,31 +653,71 @@ class HypothesisGenerator:
             )
 
         prompt = _make_prompt(normalized_feedback)
+        prompt += (
+            "\n\nBaseline planning context:\n"
+            + self._baseline_context_for_prompt()
+            + "\n\nAvailable exact baseline T-cell subset labels:\n"
+            + self._baseline_label_block()
+        )
         if self.log_prompts:
             self.logger.log_prompt("user", prompt, "revise_analysis_plan")
-        result = self._complete_structured(
+        result = self._normalize_plan_output(self._complete_structured(
             [
                 {"role": "system", "content": self.coding_system_prompt},
                 {"role": "user", "content": prompt},
             ],
             AnalysisPlan,
-        )
-        if normalized_feedback and not _plan_mentions_strategy(result, normalized_feedback):
-            retry_feedback = (
-                normalized_feedback
-                + "\n\nThe revised plan still does not visibly satisfy the user strategy feedback. "
-                  "Keep all untouched steps stable, but explicitly add the requested analysis elements."
-            )
+        ))
+        for retry_idx in range(2):
+            needs_retry = False
+            retry_feedback = normalized_feedback
+            if normalized_feedback and not _plan_mentions_strategy(result, normalized_feedback):
+                needs_retry = True
+                retry_feedback = (
+                    normalized_feedback
+                    + "\n\nThe revised plan still does not visibly satisfy the user strategy feedback. "
+                      "Keep all untouched steps stable, but explicitly add the requested analysis elements."
+                )
+            if not _first_step_matches_hypothesis(result):
+                needs_retry = True
+                retry_feedback = (
+                    (retry_feedback + "\n\n") if retry_feedback else ""
+                    + "The revised plan is still misaligned: `first_step_code` is not clearly testing the stated hypothesis "
+                      "and priority question. Keep the hypothesis stable, but revise the first step so the code directly "
+                      "targets the same subset, tissue contrast, clone behavior, and candidate genes promised by the plan."
+                )
+            if not self._plan_focus_is_consistent(result):
+                needs_retry = True
+                retry_feedback = (
+                    (retry_feedback + "\n\n") if retry_feedback else ""
+                    + "The revised plan still mixes different biological subsets across hypothesis, priority question, "
+                      "evidence goal, and code. Keep one consistent focus."
+                )
+            if not self._code_uses_valid_baseline_labels(result):
+                needs_retry = True
+                retry_feedback = (
+                    (retry_feedback + "\n\n") if retry_feedback else ""
+                    + "The revised code still uses a subset label that does not exactly match the available baseline labels. "
+                      "Use one of the exact baseline labels verbatim when filtering `cluster_cell_type`."
+                )
+            if not needs_retry:
+                break
             retry_prompt = _make_prompt(retry_feedback)
+            retry_prompt += (
+                "\n\nBaseline planning context:\n"
+                + self._baseline_context_for_prompt()
+                + "\n\nAvailable exact baseline T-cell subset labels:\n"
+                + self._baseline_label_block()
+            )
             if self.log_prompts:
-                self.logger.log_prompt("user", retry_prompt, "revise_analysis_plan_retry")
-            result = self._complete_structured(
+                self.logger.log_prompt("user", retry_prompt, f"revise_analysis_plan_retry_{retry_idx + 1}")
+            result = self._normalize_plan_output(self._complete_structured(
                 [
                     {"role": "system", "content": self.coding_system_prompt},
                     {"role": "user", "content": retry_prompt},
                 ],
                 AnalysisPlan,
-            )
+            ))
         self.logger.log_response(
             (
                 f"Current plan hypothesis: {current_plan.hypothesis}\n"
@@ -545,6 +773,12 @@ class HypothesisGenerator:
             documentation=documentation or "No documentation available.",
             num_steps_left=num_steps_left,
         )
+        prompt += (
+            "\n\nBaseline planning context:\n"
+            + self._baseline_context_for_prompt()
+            + "\n\nAvailable exact baseline T-cell subset labels:\n"
+            + self._baseline_label_block()
+        )
         return self._complete_text(
             [
                 {"role": "system", "content": "You are a rigorous reviewer of scRNA + scTCR notebook analyses."},
@@ -580,15 +814,21 @@ class HypothesisGenerator:
             literature_candidates_summary=self.literature_candidates_summary,
             num_steps_left=num_steps_left,
         )
+        prompt += (
+            "\n\nBaseline planning context:\n"
+            + self._baseline_context_for_prompt()
+            + "\n\nAvailable exact baseline T-cell subset labels:\n"
+            + self._baseline_label_block()
+        )
         if self.log_prompts:
             self.logger.log_prompt("user", prompt, "incorporate_critique")
-        return self._complete_structured(
+        return self._normalize_plan_output(self._complete_structured(
             [
                 {"role": "system", "content": self.coding_system_prompt},
                 {"role": "user", "content": prompt},
             ],
             AnalysisPlan,
-        )
+        ))
 
     def get_feedback(
         self,
@@ -698,15 +938,22 @@ class HypothesisGenerator:
             notebook_summary=notebook_summary or "Notebook is currently empty.",
             num_steps_left=num_steps_left,
         )
+        prompt += (
+            "\n\nBaseline planning context:\n"
+            + self._baseline_context_for_prompt()
+            + "\n\nAvailable exact baseline T-cell subset labels:\n"
+            + self._baseline_label_block()
+            + "\n\nWhen choosing the next step, prioritize emerging or under-studied T-cell subsets highlighted by the baseline."
+        )
         if self.log_prompts:
             self.logger.log_prompt("user", prompt, "next_step")
-        next_analysis = self._complete_structured(
+        next_analysis = self._normalize_plan_output(self._complete_structured(
             [
                 {"role": "system", "content": self.coding_system_prompt},
                 {"role": "user", "content": prompt},
             ],
             AnalysisPlan,
-        )
+        ))
         if self.use_self_critique:
             next_analysis = self.get_feedback(
                 next_analysis,
@@ -725,13 +972,13 @@ class HypothesisGenerator:
             )
             if self.log_prompts:
                 self.logger.log_prompt("user", retry_prompt, "next_step_retry")
-            next_analysis = self._complete_structured(
+            next_analysis = self._normalize_plan_output(self._complete_structured(
                 [
                     {"role": "system", "content": self.coding_system_prompt},
                     {"role": "user", "content": retry_prompt},
                 ],
                 AnalysisPlan,
-            )
+            ))
         return next_analysis
 
     def summarize_step_research(

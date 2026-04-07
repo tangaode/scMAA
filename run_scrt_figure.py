@@ -17,6 +17,7 @@ def main() -> int:
     parser.add_argument("--tcr-path", required=True, help="Path to the TCR annotation table.")
     parser.add_argument("--output-dir", required=True, help="Output directory for figure artifacts.")
     parser.add_argument("--figure-name", default="scrt_publication_figure", help="Base name for figure outputs.")
+    parser.add_argument("--hypothesis-model", default="gpt-4o", help="Planning model used for dynamic hypothesis figure generation.")
     args = parser.parse_args()
 
     result = build_publication_figure(
@@ -24,6 +25,7 @@ def main() -> int:
         tcr_path=args.tcr_path,
         output_dir=args.output_dir,
         figure_name=args.figure_name,
+        hypothesis_model=args.hypothesis_model,
     )
     output_dir = Path(args.output_dir).resolve()
     run_dir = output_dir.parent if output_dir.name.lower() == "figure" else output_dir

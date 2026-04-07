@@ -1,0 +1,120 @@
+You are generating the hypothesis-driven scRNA + scTCR figure for a real analysis run.
+
+This is not a fixed-template task.
+You must decide the analysis content and figure content from:
+- the fixed baseline results,
+- the approved hypothesis and approved plan,
+- the user feedback,
+- and the executed analysis context.
+
+Critical instruction from the user:
+"根据以上结果制定下一步分析策略，应重点关注新的T细胞亚群，或者是在本疾病中研究较少的T细胞亚群，或者是在不同分组中细胞比例有差异的T细胞亚群；该亚群在不同组织之间的clonetype如何；该亚群在肿瘤中高表达哪些基因（不同组之间的差异基因热图），哪个基因可能是关键的新的功能基因。"
+
+Your job:
+1. Read the baseline results and choose the single most compelling T-cell subcluster or T-cell state to focus on.
+2. That choice should prioritize:
+   - a newly emerged or unexpectedly prominent T-cell subcluster,
+   - or a T-cell subcluster that is relatively under-studied in this disease,
+   - or a T-cell subcluster with strong tissue/group proportion differences,
+   - or a T-cell subcluster with striking cloneType expansion behavior.
+3. Write executable Python code that creates a publication-quality hypothesis figure.
+4. The figure should follow the chosen biological story. Do not force a fixed panel order or a fixed first panel.
+5. Use only panels that are actually supported by the available data. If 3 or 4 strong panels are enough, create only 3 or 4 panels.
+6. Every panel must contain a real biological plot. Do not leave blank axes, empty placeholders, or text-only filler panels.
+7. If one planned analysis is unsupported after checking the data, drop that panel and rebuild the figure layout with fewer panels instead of keeping an empty slot.
+
+When supported by data, the figure will often include several of these ideas:
+- the selected T-cell subcluster in embedding space,
+- the selected subcluster across tissues or groups,
+- cloneType distribution of that subcluster across tissues,
+- differential expression or marker heatmap for tumor/metastasis versus comparison tissues,
+- one or two candidate functional genes that may explain the state,
+- any extra support panel that strengthens the main mechanistic story.
+
+Available context:
+- Executed hypothesis:
+{executed_hypothesis}
+
+- Approved priority question:
+{approved_priority_question}
+
+- Approved plan steps:
+{approved_plan_steps}
+
+- Approved strategy feedback:
+{approved_strategy_feedback}
+
+- User feedback:
+{user_feedback}
+
+- Final interpretation from the run:
+{final_interpretation}
+
+- Fixed baseline summary:
+{baseline_summary}
+
+- Focused T-cell reclustering context:
+{tcell_context}
+
+- LLM T-cell annotation table preview:
+{tcell_annotation_table}
+
+- Top non-lincRNA T-cell markers per cluster:
+{tcell_marker_summary}
+
+- RNA obs columns:
+{obs_columns}
+
+- T-cell obs columns:
+{tcell_obs_columns}
+
+- T-cell embedding keys:
+{tcell_obsm_keys}
+
+- Paired subset obs columns:
+{paired_obs_columns}
+
+- T-cell subtype column:
+{t_group_col}
+
+- Tissue column:
+{tissue_col}
+
+- Tissue levels:
+{tissue_levels}
+
+Execution environment:
+- `adata_rna`: RNA AnnData with merged TCR metadata in `.obs`
+- `paired_adata`: paired RNA+TCR subset
+- `t_adata`: reclustered T-cell AnnData
+- `t_group_col`: the column in `t_adata.obs` containing the LLM-defined T-cell subtype
+- `t_marker_df`: marker table for reclustered T-cell clusters
+- `t_annotation_df`: annotation table for reclustered T-cell clusters
+- `tcr_df`: normalized TCR table
+- `result_context`: dict with run context
+- `standard_baseline_summary`: text summary of the baseline
+- `HYP_FIG_PNG`: output PNG path
+- `HYP_FIG_PDF`: output PDF path
+- already imported: `numpy as np`, `pandas as pd`, `scanpy as sc`, `seaborn as sns`, `matplotlib.pyplot as plt`
+- available helpers: `assign_clone_type_labels`, `clone_type_distribution_table`, `expression_frame`, `paired_tcr_subset`, `proportion_table`, `resolve_gene_names`, `tissue_stratified_expansion_de`, `tumor_like_subset`, `panel_label`, `plot_categorical_embedding`
+
+Hard requirements:
+- Return code that creates a matplotlib figure object in variable `fig`.
+- Save the figure to both:
+  - `{figure_png_path}`
+  - `{figure_pdf_path}`
+- Execute the plotting code at top level. Do not define `main()` and do not use `if __name__ == '__main__'`.
+- Do not assign placeholder values like `t_adata = ...`.
+- Use only the already available objects and standard plotting/data tools.
+- Do not reload files.
+- Do not invent metadata columns, subtype names, or embedding names.
+- Inspect available columns and subtype labels before subsetting.
+- If you use embeddings, prefer valid basis names such as `X_umap` or `X_pca`.
+- Be defensive when columns may be missing or some comparisons are underpowered.
+- Make the figure publication-oriented and biologically interpretable.
+- The code must be self-contained and executable Python only.
+
+Return:
+- `analysis_focus`: one concise sentence naming the chosen focus
+- `rationale`: a short paragraph explaining why this is the right next figure
+- `code`: executable Python only

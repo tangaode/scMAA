@@ -14,6 +14,11 @@ Requirements:
 - Do not return a single-candidate menu unless the user explicitly asked for one.
 - Do not assume the user wants literature-inspired questions unless the literature summary clearly helps.
 - If the research brief already points to a preferred direction, make that visible in the ranking.
+- Treat the fixed baseline T-cell/clonotype analysis as already observed.
+- Prefer candidates that grow from those baseline results: newly emerged T-cell subsets, disease-understudied T-cell states, tissue-skewed subsets, cloneType-enriched subsets, and candidate functional genes that may explain those states.
+- Do not return near-duplicate candidates with the same biological theme phrased differently.
+- At least 2 candidates should point to a concrete mechanistic direction, such as a named gene, pathway, stress program, trafficking axis, or exhaustion regulator.
+- Strong candidates should explicitly state: the T-cell subset, the relevant tissue contrast or clone behavior, and the candidate mechanism to test next.
 - Each `first_test` should describe a concrete first notebook step, not vague future work.
 - Keep caveats realistic and tied to the actual data.
 - If the user asks to broaden, narrow, add more options, or avoid a certain direction, apply that request to the whole candidate menu.
